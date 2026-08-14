@@ -1,0 +1,8 @@
+# dependencies / local junctions (host copies for tests)
+node_modules/
+
+# stray runtime logs (restart helper logs to ~/.dsh/web-logs now)
+.web/
+
+# npm
+*.tgz
