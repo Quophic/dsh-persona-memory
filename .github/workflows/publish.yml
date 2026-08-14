@@ -9,6 +9,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.repository == 'Quophic/dsh-persona-memory'
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
