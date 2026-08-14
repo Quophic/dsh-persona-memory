@@ -148,10 +148,12 @@ dsh --profile web
 | `memoryFtsEnabled` | `true` | 启用 SQLite FTS5 记忆镜像（`memory_search` 全文检索） |
 | `vectorEnabled` | `false` | 启用语义向量搜索（`memory_search` 变混合检索：FTS5 + 向量 RRF 融合） |
 | `vectorIndexDir` | `$DSH_HOME/memory` | 向量索引目录（DSH 侧，绝不写入 Pi 共享记忆目录） |
-| `embeddingProvider` | `remote` | `remote`（OpenAI 兼容 `/embeddings` API）或 `local`（transformers.js，需自装 `@xenova/transformers`） |
+| `embeddingProvider` | `remote` | `remote`（OpenAI 兼容 `/embeddings` API）或 `local`（自带 transformers.js，模型自动下载） |
 | `embeddingBaseUrl` | `''` | 远程 embedding API 基址（如 `https://api.openai.com/v1`） |
 | `embeddingApiKey` | `''` | 远程 embedding API Key；不填则读 `DSH_EMBEDDING_API_KEY` 环境变量 |
 | `embeddingModel` | `text-embedding-3-small` | embedding 模型名（local 默认 `Xenova/all-MiniLM-L6-v2`） |
+| `embeddingCacheDir` | `$DSH_HOME/models` | local 模型缓存目录（首次自动下载到此处） |
+| `embeddingRemoteHost` | `https://huggingface.co` | local 模型下载源；大陆可用 `https://hf-mirror.com` |
 | `learnEnabled` | `true` | 是否启用后台自动学习 |
 | `learnIntervalTurns` | `10` | 每 N 轮（turn/end）触发一次复习 |
 | `learnRecentTurns` | `2` | 每次复习取最近多少个轮次的对话 |
@@ -201,12 +203,15 @@ dsh --profile web
 - id: persona-memory
   config:
     vectorEnabled: true
-    embeddingProvider: remote
-    embeddingBaseUrl: https://api.openai.com/v1
-    embeddingApiKey: sk-xxx          # 或设环境变量 DSH_EMBEDDING_API_KEY
+    embeddingProvider: local
+    # embeddingModel: Xenova/all-MiniLM-L6-v2   # 默认，可换
+    # embeddingCacheDir: C:/Users/xxx/.dsh/models # 默认 $DSH_HOME/models
+    # embeddingRemoteHost: https://hf-mirror.com  # 大陆镜像（可选）
 ```
 
-> 注：DeepSeek 官方 `/v1/embeddings` 接口曾出现可用性问题（见 [deepseek-ai/DeepSeek-R1#652](https://github.com/deepseek-ai/DeepSeek-R1/issues/652)），不建议依赖；任何 OpenAI 兼容 embedding 服务均可（OpenAI / SiliconFlow / Ollama 等）。想完全离线可用 `embeddingProvider: local` 并 `pnpm add @xenova/transformers`（模型约 80MB，本地推理）。
+> **本地模型自动下载**：`embeddingProvider: local` 时，插件自带 `@xenova/transformers`，**首次使用自动从 HuggingFace 下载模型**（默认 `Xenova/all-MiniLM-L6-v2`，约 80MB）到 `$DSH_HOME/models`，之后完全离线运行；下载进度会打印到 dsh 日志。网络受限时可用 `embeddingRemoteHost: https://hf-mirror.com` 走镜像，或预下载模型放入 `embeddingCacheDir`。
+>
+> 远程方案（备选）：`embeddingProvider: remote` + `embeddingBaseUrl`（如 `https://api.openai.com/v1`）+ `embeddingApiKey`（或 `DSH_EMBEDDING_API_KEY` 环境变量）。DeepSeek 官方 `/v1/embeddings` 接口曾出现可用性问题（见 [deepseek-ai/DeepSeek-R1#652](https://github.com/deepseek-ai/DeepSeek-R1/issues/652)），不建议依赖。
 
 ## 常驻指令（STANDING.md）
 

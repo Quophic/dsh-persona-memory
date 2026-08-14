@@ -103,6 +103,9 @@ function apply(ctx, config) {
     embeddingBaseUrl: '',
     embeddingApiKey: '', // falls back to DSH_EMBEDDING_API_KEY env
     embeddingModel: 'text-embedding-3-small',
+    // local provider: model auto-downloads to embeddingCacheDir on first use
+    embeddingCacheDir: '', // default: $DSH_HOME/models
+    embeddingRemoteHost: 'https://huggingface.co', // mirror: https://hf-mirror.com
     ...(config ?? {}),
   };
   cfg.dir = resolveDir(config); // explicit config.dir wins; defaults re-resolved
@@ -134,7 +137,10 @@ function apply(ctx, config) {
     maxChars: cfg.standingCharLimit,
   });
   const fts = createFtsIndex({ dir: cfg.dir, enabled: cfg.memoryFtsEnabled });
-  const embedding = createEmbeddingProvider(cfg);
+  const embedding = createEmbeddingProvider({
+    ...cfg,
+    logger: ctx.logger,
+  });
   const vector = createVectorIndex({
     dir: cfg.vectorIndexDir ?? dshHomePath('memory'),
     enabled: cfg.vectorEnabled,
