@@ -52,7 +52,7 @@ function apply(ctx, config) {
   const cfg = {
     dir: resolveDir(config),
     memoryCharLimit: 5000,
-    userCharLimit: 8000,
+    userCharLimit: 5000, // aligned with pi-hermes-memory DEFAULT_USER_CHAR_LIMIT
     enableSecretScanning: true,
     inject: true,
     sectionOrder: 55,
@@ -99,13 +99,20 @@ function apply(ctx, config) {
   const getProjectStore = (name) => {
     let ps = projectStores.get(name);
     if (!ps) {
-      ps = createMemoryStore({ dir: path.join(projectsRoot, name) });
+      ps = createMemoryStore({ dir: path.join(projectsRoot, name), limits: { memory: cfg.projectCharLimit ?? 5000 } });
       projectStores.set(name, ps);
     }
     return ps;
   };
 
-  const store = createMemoryStore(cfg);
+  const store = createMemoryStore({
+    dir: cfg.dir,
+    limits: {
+      memory: cfg.memoryCharLimit,
+      user: cfg.userCharLimit,
+      failure: cfg.failureCharLimit ?? cfg.memoryCharLimit * 2,
+    },
+  });
   const standing = createStandingStore({
     dir: cfg.dir,
     maxEntries: cfg.standingMaxEntries,

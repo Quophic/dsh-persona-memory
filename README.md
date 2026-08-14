@@ -47,9 +47,11 @@
 
 | 功能 | 说明 |
 |---|---|
-| 原子写 + 串行队列 | 临时文件 + rename，崩溃不留半截文件；每文件写队列防止并发工具调用丢更新 |
+| 原子写 + 单锁串行队列 | 临时文件 + rename，崩溃不留半截文件；add/update/remove 走单锁原子读-改-写（`mutate`），并发工具调用绝不互相覆盖；只读/纯写各自加锁 |
+| 跨进程写保护 | 写前 sha256 指纹预检（对照 Pi 的 ExternalMemoryWriteConflict）：外部（Pi/手动编辑）改过就不覆盖，重试一次后返回 `conflict` 提示 |
+| 与 Pi 字节兼容 | 对齐 pi-hermes-memory v0.9.4 实测：无尾随换行、charCount 含分隔符、USER 上限 5000、超限拒绝写入、failure 去重按 (text, project)、注入 `<memory-context>` 围栏 |
 | 优雅降级 | FTS5 不可用回退子串搜索；SQLite 动态 import，插件绝不硬依赖 |
-| 85 项冒烟测试 | 用真实 hermes 文件副本验证格式兼容、解析、读写、扫描、合并、项目、纠正、FTS 全链路 |
+| 102 项冒烟测试 | 用真实 hermes 文件副本验证格式兼容、解析、读写、扫描、合并、项目、纠正、FTS、溢出拒绝、字节格式、并发、围栏全链路 |
 
 ---
 
@@ -186,9 +188,9 @@ dsh --profile web
 
 ## 与 Pi 共用的注意点
 
-- DSH 与 Pi 不要**同时**写同一份文件（两边都是原子写，但无跨进程锁）；不同时运行则完全安全。
+- **避免同时写**：两边都是原子写，但 Pi 有跨进程锁（`.pi-hermes-locks.sqlite` + recovery 文件），DSH 侧用**写前指纹预检**兜底——检测到外部改动就不覆盖并提示冲突。极端并发下仍可能互相感知不到，**不同时运行最安全**。
 - 本插件覆盖 `MEMORY.md` / `USER.md` / `STANDING.md` / `failures.md` / `projects-memory/`（项目根与 Pi 一致）。
-- 两边扫描标准一致（同一份 content-scanner 移植），hermes 写入的内容 DSH 直接可读，反之亦然。
+- 两边扫描标准一致（同一份 content-scanner 移植），hermes 写入的内容 DSH 直接可读，反之亦然；磁盘格式（含无尾随换行、project64、超限拒绝）已对齐 Pi v0.9.4 实测。
 
 ## 许可与致谢
 

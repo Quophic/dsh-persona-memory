@@ -27,7 +27,11 @@ function check(label, cond, extra = '') {
   if (!cond) failures++;
 }
 
-const store = createMemoryStore({ dir: testDir });
+// Tests exercise format/round-trip behavior, not capacity — use generous
+// limits so the copied real hermes files (which may already be near/over
+// their own budget) never trip the overflow refusal during format tests.
+const BIG_LIMITS = { memory: 1_000_000, user: 1_000_000, failure: 2_000_000 };
+const store = createMemoryStore({ dir: testDir, limits: BIG_LIMITS });
 
 // 1. read both files against the REAL hermes format
 const mem = await store.read('memory', 5000);
@@ -250,6 +254,92 @@ check('fts disabled search falls back to null', (await ftsDisabled.search(store,
 const fallbackHits = await store.search('fts-marker', 'all', 10);
 check('substring fallback still finds entries', fallbackHits.length >= 2);
 fts.close(); // release the SQLite handle so the temp dir can be removed
+
+// 15. memory-tool layer: update must target the PROJECT store, not the global one
+import { registerMemoryTool } from '../lib/memory-tool.js';
+let registeredTool;
+const toolCtx = {
+  tools: { register: (tool) => { registeredTool = tool; } },
+  logger: { warn: () => {}, info: () => {} },
+  llm: { stream: async function* () {} },
+};
+const globalStore = createMemoryStore({ dir: testDir });
+const projectStores = new Map();
+const getProjectStore = (name) => {
+  if (!projectStores.has(name)) projectStores.set(name, createMemoryStore({ dir: path.join(testDir, 'projects-memory', name) }));
+  return projectStores.get(name);
+};
+registerMemoryTool(toolCtx, globalStore, {
+  memoryCharLimit: 5000,
+  userCharLimit: 8000,
+  failureCharLimit: 10000,
+  projectCharLimit: 5000,
+  enableSecretScanning: true,
+  usageNudgeThreshold: 0.9,
+  autoConsolidate: false,
+  consolidateStaleDays: 30,
+  consolidateTimeoutMs: 1000,
+}, getProjectStore);
+await getProjectStore('tooltest').add('memory', 'TOOL-REPO-CONVENTION use pnpm');
+const updResult = await registeredTool.execute(
+  { action: 'update', project: 'tooltest', match: 'TOOL-REPO-CONVENTION', content: 'TOOL-REPO-CONVENTION use pnpm always' },
+  undefined,
+);
+check('tool update targets project store', updResult.updated === true && updResult.which === 'project:tooltest', JSON.stringify(updResult));
+const globalReadBack = await globalStore.read('memory', 5000);
+check('tool update does not touch global store', !globalReadBack.content.includes('TOOL-REPO-CONVENTION'));
+const projReadBack = await getProjectStore('tooltest').read('memory', 5000);
+check('tool update applied to project store', projReadBack.content.includes('pnpm always'));
+
+// 16. concurrent adds never clobber (single-lock read-modify-write)
+const concStore = createMemoryStore({ dir: path.join(testDir, 'conc') });
+const [ca, cb] = await Promise.all([
+  concStore.add('memory', 'CONC-A entry'),
+  concStore.add('memory', 'CONC-B entry'),
+]);
+const concRead = await concStore.read('memory', 5000);
+check('concurrent adds both land', ca.added && cb.added && concRead.entryCount === 2, `entries=${concRead.entryCount}`);
+const concRaw = fs.readFileSync(path.join(testDir, 'conc', 'MEMORY.md'), 'utf8');
+check('concurrent adds both persisted', concRaw.includes('CONC-A') && concRaw.includes('CONC-B'));
+
+// 17. overflow refusal (hermes semantics: never grow past the limit)
+// NB: every entry costs ~45 extra chars for its <!-- created=, last= --> metadata.
+const tightStore = createMemoryStore({ dir: path.join(testDir, 'tight'), limits: { memory: 70 } });
+const t1 = await tightStore.add('memory', 'this entry fits fine');
+check('tight add under limit lands', t1.added === true, JSON.stringify(t1));
+const t2 = await tightStore.add('memory', 'this entry is way too long and must be refused outright by the store');
+check('tight add over limit refused', t2.added === false && t2.overflow === true, JSON.stringify(t2));
+const tightRaw = fs.readFileSync(path.join(testDir, 'tight', 'MEMORY.md'), 'utf8');
+check('refused add did not write', !tightRaw.includes('way too long'));
+const t3 = await tightStore.update('memory', 'fits fine', 'this replacement is also way too long and must be refused too');
+check('tight update over limit refused', t3.updated === false && t3.overflow === true, JSON.stringify(t3));
+const t4 = await tightStore.rewrite('memory', 'short');
+check('tight rewrite under limit lands', t4.rewritten === true, JSON.stringify(t4));
+
+// 18. byte-compatible serialization (no trailing newline, pi-hermes saveToDisk)
+const byteStore = createMemoryStore({ dir: path.join(testDir, 'bytes') });
+await byteStore.add('memory', 'byte one');
+await byteStore.add('memory', 'byte two');
+const byteRaw = fs.readFileSync(path.join(testDir, 'bytes', 'MEMORY.md'), 'utf8');
+const byteOneEnc = byteRaw.split(ENTRY_DELIMITER)[0];
+const byteTwoEnc = byteRaw.split(ENTRY_DELIMITER)[1];
+check('file has no trailing newline', !byteRaw.endsWith('\n'), JSON.stringify(byteRaw.slice(-12)));
+check('file is exactly two entries joined by §', byteRaw === `${byteOneEnc}${ENTRY_DELIMITER}${byteTwoEnc}`, JSON.stringify(byteRaw));
+check('serialized entries keep metadata', /^byte one <!-- created=\d{4}-\d{2}-\d{2}, last=\d{4}-\d{2}-\d{2} -->$/.test(byteOneEnc) && /^byte two <!-- created=\d{4}-\d{2}-\d{2}, last=\d{4}-\d{2}-\d{2} -->$/.test(byteTwoEnc));
+
+// 19. failure dedupe is scoped by project (hermes failure behavior)
+const scopeStore = createMemoryStore({ dir: path.join(testDir, 'scope') });
+const sf1 = await scopeStore.add('failure', '[failure] same text', { dedupe: true, project: 'alpha' });
+const sf2 = await scopeStore.add('failure', '[failure] same text', { dedupe: true, project: 'beta' });
+const sf3 = await scopeStore.add('failure', '[failure] same text', { dedupe: true, project: 'alpha' });
+check('failure dedupe allows distinct projects', sf1.added && sf2.added && sf3.added === false && sf3.duplicate === true, JSON.stringify([sf1, sf2, sf3]));
+check('failure entries carry project64 metadata', fs.readFileSync(path.join(testDir, 'scope', 'failures.md'), 'utf8').includes('project64='));
+
+// 20. prompt injection uses the <memory-context> fence (hermes fenceBlock)
+import { renderMemoryBlock } from '../lib/prompt.js';
+const fenced = renderMemoryBlock(store, { memoryCharLimit: 5000, userCharLimit: 5000 });
+check('memory block is fenced against injection', fenced.startsWith('<memory-context>') && fenced.endsWith('</memory-context>') && fenced.includes('NOT new user input'));
+check('empty store renders the empty hint unfenced', renderMemoryBlock(createMemoryStore({ dir: path.join(testDir, 'empty') }), { memoryCharLimit: 5000, userCharLimit: 5000 }).startsWith('_empty'));
 
 // cleanup
 fs.rmSync(testDir, { recursive: true, force: true });
