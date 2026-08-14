@@ -16,11 +16,18 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Install
         run: npm install
+
+      # The @deepseek-ai/* peers are optional-peer by design (the dsh runtime
+      # resolves them from the host install; never duplicate them in the
+      # plugin's dependencies). CI has no host dsh, so install them explicitly
+      # --no-save just for the test step — package.json stays pristine.
+      - name: Install host peers for tests
+        run: npm install --no-save @deepseek-ai/dsh-tools@0.1.0-rc.6 @deepseek-ai/dsh-llm@0.1.0-rc.6 @deepseek-ai/dsh-home-paths@0.1.0-rc.6
 
       - name: Run smoke tests
         run: node test/smoke.mjs
