@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-memory",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Persistent long-term persona memory for DeepSeek Harness: MEMORY.md/USER.md storage, memory + memory_search tools, per-request context injection, and secret scanning. Ported in spirit from pi-hermes-memory.",
   "type": "module",
   "main": "index.js",
@@ -28,6 +28,7 @@
   },
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "plugin",
     "memory",
