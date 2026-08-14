@@ -17,6 +17,9 @@
     "type": "git",
     "url": "https://github.com/Quophic/dsh-persona-memory.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",

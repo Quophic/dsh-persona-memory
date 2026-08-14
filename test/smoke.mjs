@@ -10,8 +10,16 @@ import { parseFacts } from '../lib/learning.js';
 
 const srcDir = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-memory-smoke-'));
-fs.copyFileSync(path.join(srcDir, 'MEMORY.md'), path.join(testDir, 'MEMORY.md'));
-fs.copyFileSync(path.join(srcDir, 'USER.md'), path.join(testDir, 'USER.md'));
+// Prefer a COPY of the real shared hermes files; on CI / fresh machines seed
+// minimal hermes-format files so the format tests still run meaningfully.
+const hasRealFiles = fs.existsSync(path.join(srcDir, 'MEMORY.md')) && fs.existsSync(path.join(srcDir, 'USER.md'));
+if (hasRealFiles) {
+  fs.copyFileSync(path.join(srcDir, 'MEMORY.md'), path.join(testDir, 'MEMORY.md'));
+  fs.copyFileSync(path.join(srcDir, 'USER.md'), path.join(testDir, 'USER.md'));
+} else {
+  fs.writeFileSync(path.join(testDir, 'MEMORY.md'), 'ci-seed fact <!-- created=2026-01-01, last=2026-01-01 -->\n');
+  fs.writeFileSync(path.join(testDir, 'USER.md'), 'ci-seed user profile <!-- created=2026-01-01, last=2026-01-01 -->\n');
+}
 
 let failures = 0;
 function check(label, cond, extra = '') {
@@ -27,7 +35,8 @@ check('memory read parses entries', mem.entryCount > 0, `entries=${mem.entryCoun
 check('memory read returns content', mem.content.length > 0);
 const user = await store.read('user', 8000);
 check('user read parses entries', user.entryCount > 0, `entries=${user.entryCount}`);
-check('user content mentions 莲', user.content.includes('莲'), 'shared USER.md content visible');
+// shared-content assertion only meaningful when the real Pi files were copied
+check('user content mentions 莲', !hasRealFiles || user.content.includes('莲'), 'shared USER.md content visible');
 
 // 2. search (self-contained: the real shared file may be consolidated live)
 await store.add('memory', 'SMOKE-SEARCH-MARKER godot-ish content');
