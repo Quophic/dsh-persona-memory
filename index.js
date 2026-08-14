@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
+import { createEmbeddingProvider } from './lib/embedding.js';
 import { registerLifecycleHooks } from './lib/learning.js';
 import { renderRecentFailures } from './lib/failures.js';
 import { createMemoryStore } from './lib/memory-store.js';
@@ -28,6 +29,7 @@ import { registerMemorySearchTool } from './lib/memory-search-tool.js';
 import { registerMemoryTool } from './lib/memory-tool.js';
 import { renderMemoryBlock } from './lib/prompt.js';
 import { createFtsIndex } from './lib/fts.js';
+import { createVectorIndex } from './lib/vector-index.js';
 import { detectProject, resolveProjectsRoot } from './lib/projects.js';
 import { registerStandingCommand } from './lib/standing-command.js';
 import { createStandingStore } from './lib/standing.js';
@@ -88,6 +90,19 @@ function apply(ctx, config) {
     projectCharLimit: 5000,
     // FTS5 memory mirror (Extended Store): full-text ranking for memory_search
     memoryFtsEnabled: true,
+    // Semantic (vector) memory search: a DSH-side SQLite cache storing ONLY
+    // embeddings for the shared Markdown files. Fingerprint-incremental: Pi's
+    // writes to MEMORY.md/USER.md/failures.md are picked up on next search.
+    // Off by default; enable with vectorEnabled + an embedding provider.
+    vectorEnabled: false,
+    // Directory for the derived vector index. Kept under the DSH home (never
+    // inside the Pi-shared memory dir) so Pi never sees or touches it. The
+    // index is disposable — drop it and it rebuilds from the Markdown files.
+    vectorIndexDir: dshHomePath('memory'),
+    embeddingProvider: 'remote', // 'remote' (OpenAI-compatible API) | 'local' (transformers.js)
+    embeddingBaseUrl: '',
+    embeddingApiKey: '', // falls back to DSH_EMBEDDING_API_KEY env
+    embeddingModel: 'text-embedding-3-small',
     ...(config ?? {}),
   };
   cfg.dir = resolveDir(config); // explicit config.dir wins; defaults re-resolved
@@ -119,9 +134,15 @@ function apply(ctx, config) {
     maxChars: cfg.standingCharLimit,
   });
   const fts = createFtsIndex({ dir: cfg.dir, enabled: cfg.memoryFtsEnabled });
+  const embedding = createEmbeddingProvider(cfg);
+  const vector = createVectorIndex({
+    dir: cfg.vectorIndexDir ?? dshHomePath('memory'),
+    enabled: cfg.vectorEnabled,
+    provider: embedding,
+  });
 
   registerMemoryTool(ctx, store, cfg, getProjectStore);
-  registerMemorySearchTool(ctx, store, cfg, getProjectStore, fts);
+  registerMemorySearchTool(ctx, store, cfg, getProjectStore, fts, vector);
   registerLifecycleHooks(ctx, store, cfg);
 
   if (cfg.standingEnabled) {

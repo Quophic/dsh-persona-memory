@@ -341,6 +341,94 @@ const fenced = renderMemoryBlock(store, { memoryCharLimit: 5000, userCharLimit: 
 check('memory block is fenced against injection', fenced.startsWith('<memory-context>') && fenced.endsWith('</memory-context>') && fenced.includes('NOT new user input'));
 check('empty store renders the empty hint unfenced', renderMemoryBlock(createMemoryStore({ dir: path.join(testDir, 'empty') }), { memoryCharLimit: 5000, userCharLimit: 5000 }).startsWith('_empty'));
 
+// 21. vector index: fingerprint-incremental sync + cosine retrieval + RRF fusion
+import { createVectorIndex } from '../lib/vector-index.js';
+import { fuseRanks } from '../lib/memory-search-tool.js';
+// Deterministic fake embeddings: char-bigram bag vector, so "godot/physics"
+// style overlap drives cosine similarity without any real model.
+function fakeEmbed(texts) {
+  const DIM = 256;
+  const rows = [];
+  for (const text of texts) {
+    const v = new Array(DIM).fill(0);
+    const s = `\u0000${text}\u0000`;
+    for (let i = 0; i < s.length - 1; i++) {
+      let h = 7;
+      for (const ch of s.slice(i, i + 2)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      v[h % DIM] += 1;
+    }
+    let norm = Math.sqrt(v.reduce((n, x) => n + x * x, 0)) || 1;
+    rows.push(v.map((x) => x / norm));
+  }
+  return rows;
+}
+let embedCalls = 0;
+const fakeProvider = {
+  kind: 'remote',
+  async embed(texts) {
+    embedCalls++;
+    return fakeEmbed(texts);
+  },
+};
+const vecDir = path.join(testDir, 'vecindex');
+const vstore = createMemoryStore({ dir: vecDir, limits: BIG_LIMITS });
+await vstore.add('memory', 'godot physics enemy pathfinding');
+await vstore.add('memory', 'coffee brewing temperature');
+const vindex = createVectorIndex({ dir: vecDir, enabled: true, provider: fakeProvider });
+const vAvail = await vindex.available();
+check('vector index available', vAvail === true);
+const vhits = await vindex.search(vstore, 'godot enemy ai movement', 'all', 5);
+check('vector search ranks semantic near-match first', vhits !== null && vhits[0]?.text.includes('godot physics'), JSON.stringify(vhits));
+// fingerprint-incremental: adding a new entry only embeds the delta
+embedCalls = 0;
+await vstore.add('memory', 'unreal engine nav mesh');
+const vhits2 = await vindex.search(vstore, 'godot enemy ai movement', 'all', 5);
+check('vector search picks up new entry after incremental sync', vhits2 !== null && vhits2.some((h) => h.text.includes('unreal')), JSON.stringify(vhits2));
+check('incremental sync embeds only the delta', embedCalls === 2, `calls=${embedCalls} (1 delta sync + 1 query)`);
+// RRF fusion: entry in BOTH lists ranks above entries in only one
+const ftsA = [
+  { which: 'memory', created: '2026-01-01', text: 'both exact and semantic' },
+  { which: 'memory', created: '2026-01-01', text: 'fts only exact' },
+];
+const vecA = [
+  { which: 'memory', created: '2026-01-01', text: 'semantic only near' },
+  { which: 'memory', created: '2026-01-01', text: 'both exact and semantic' },
+];
+const fused = fuseRanks(ftsA, vecA, 3);
+check('rrf fusion boosts entries found by both engines', fused[0]?.text === 'both exact and semantic', JSON.stringify(fused));
+check('rrf fusion dedupes and bounds', fused.length === 3);
+const disabledVec = createVectorIndex({ dir: vecDir, enabled: false, provider: fakeProvider });
+check('vector index disabled reports unavailable', (await disabledVec.available()) === false);
+vindex.close();
+
+// 22. memory_search tool: hybrid engine path with mocked vector index
+import { registerMemorySearchTool } from '../lib/memory-search-tool.js';
+let registeredSearchTool;
+const searchCtx = {
+  tools: { register: (tool) => { registeredSearchTool = tool; } },
+  logger: { warn: () => {}, info: () => {} },
+  llm: { stream: async function* () {} },
+};
+const searchStore = createMemoryStore({ dir: path.join(testDir, 'searchstore'), limits: BIG_LIMITS });
+await searchStore.add('memory', 'rust borrow checker tips');
+const mockFts = {
+  async search(_store, query, which, limit) {
+    return [{ which, created: '2026-01-01', text: 'rust borrow checker tips' }];
+  },
+};
+const mockVector = {
+  async search() {
+    return [{ which: 'memory', created: '2026-01-01', text: 'ownership memory safety' }];
+  },
+};
+registerMemorySearchTool(searchCtx, searchStore, { searchMaxResults: 10 }, () => searchStore, mockFts, mockVector);
+const hybridResult = await registeredSearchTool.execute({ query: 'rust memory safety' }, undefined);
+check('memory_search tool uses hybrid engine', hybridResult.engine === 'hybrid' && hybridResult.matches.length === 2, JSON.stringify(hybridResult));
+// vector disabled → fts-only engine
+registerMemorySearchTool(searchCtx, searchStore, { searchMaxResults: 10 }, () => searchStore, mockFts, null);
+const ftsOnly = await registeredSearchTool.execute({ query: 'rust' }, undefined);
+check('memory_search tool falls back to fts engine', ftsOnly.engine === 'fts' && ftsOnly.matches[0]?.text.includes('borrow'), JSON.stringify(ftsOnly));
+
 // cleanup
 fs.rmSync(testDir, { recursive: true, force: true });
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

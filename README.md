@@ -23,7 +23,7 @@
 | 功能 | 说明 |
 |---|---|
 | `memory` 工具 | `read` / `add` / `update` / `delete` / `rewrite`；`which` 选 memory/user/failure；`project` 参数操作项目记忆 |
-| `memory_search`（FTS5） | 优先走 SQLite FTS5 全文索引（相关度排序，`<dir>/.memory-index.sqlite`，按文件 mtime 自动重建）；SQLite 不可用时回退子串扫描 |
+| `memory_search`（混合检索） | 优先 **FTS5 + 语义向量（RRF 融合）**：FTS5 全文索引（`<dir>/.memory-index.sqlite`，mtime 自动重建）+ 向量索引（`vectorIndexDir` 下 `.memory-vec.sqlite`，只存 embedding、指纹增量同步、纯 JS 余弦）；向量未启用时走 FTS5，SQLite 不可用时回退子串扫描；结果始终 ≤`searchMaxResults` 条、只进工具输出，注入成本不随检索方式增加 |
 | 用量提示 | 所有 `memory` 操作返回用量百分比；达 90%（`usageNudgeThreshold`）提醒用 `rewrite` 合并 |
 | `/standing` 命令 | 用户管理常驻指令（列出 / add / remove / clear） |
 
@@ -51,8 +51,7 @@
 | 跨进程写保护 | 写前 sha256 指纹预检（对照 Pi 的 ExternalMemoryWriteConflict）：外部（Pi/手动编辑）改过就不覆盖，重试一次后返回 `conflict` 提示 |
 | 与 Pi 字节兼容 | 对齐 pi-hermes-memory v0.9.4 实测：无尾随换行、charCount 含分隔符、USER 上限 5000、超限拒绝写入、failure 去重按 (text, project)、注入 `<memory-context>` 围栏 |
 | 优雅降级 | FTS5 不可用回退子串搜索；SQLite 动态 import，插件绝不硬依赖 |
-| 102 项冒烟测试 | 用真实 hermes 文件副本验证格式兼容、解析、读写、扫描、合并、项目、纠正、FTS、溢出拒绝、字节格式、并发、围栏全链路 |
-
+| 111 项冒烟测试 | 用真实 hermes 文件副本验证格式兼容、解析、读写、扫描、合并、项目、纠正、FTS、向量索引、溢出拒绝、字节格式、并发、围栏全链路 |
 ---
 
 ## 借鉴来源（明确声明）
@@ -147,6 +146,12 @@ dsh --profile web
 | `correctionPatternDetection` | `true` | 对话内纠正模式检测（强/弱/负向模式，仅直接人工消息） |
 | `correctionRateLimitTurns` | `3` | 对话内纠正保存的最小间隔（轮） |
 | `memoryFtsEnabled` | `true` | 启用 SQLite FTS5 记忆镜像（`memory_search` 全文检索） |
+| `vectorEnabled` | `false` | 启用语义向量搜索（`memory_search` 变混合检索：FTS5 + 向量 RRF 融合） |
+| `vectorIndexDir` | `$DSH_HOME/memory` | 向量索引目录（DSH 侧，绝不写入 Pi 共享记忆目录） |
+| `embeddingProvider` | `remote` | `remote`（OpenAI 兼容 `/embeddings` API）或 `local`（transformers.js，需自装 `@xenova/transformers`） |
+| `embeddingBaseUrl` | `''` | 远程 embedding API 基址（如 `https://api.openai.com/v1`） |
+| `embeddingApiKey` | `''` | 远程 embedding API Key；不填则读 `DSH_EMBEDDING_API_KEY` 环境变量 |
+| `embeddingModel` | `text-embedding-3-small` | embedding 模型名（local 默认 `Xenova/all-MiniLM-L6-v2`） |
 | `learnEnabled` | `true` | 是否启用后台自动学习 |
 | `learnIntervalTurns` | `10` | 每 N 轮（turn/end）触发一次复习 |
 | `learnRecentTurns` | `2` | 每次复习取最近多少个轮次的对话 |
@@ -179,6 +184,29 @@ dsh --profile web
 - 无注释的旧条目照常解析（日期默认为今天）。
 - 写入采用原子写（临时文件 + rename），并按文件串行化，避免并发工具调用互相覆盖。
 - STANDING.md 例外：每行一条，无分隔符、无元数据（见下节）。
+
+## 语义向量搜索（可选，默认关闭）
+
+`memory_search` 默认走 **FTS5 全文检索**（字面匹配）；开启 `vectorEnabled` 后升级为**混合检索**：
+
+- **存储不变**：MEMORY.md / USER.md / failures.md 仍是唯一真相源，与 Pi 逐字节共用不变。
+- **索引在 DSH 侧**：`.memory-vec.sqlite` 存在 `vectorIndexDir`（默认 `$DSH_HOME/memory`），**只存 embedding 数据**（每条记忆的向量 BLOB + sha256 指纹），Pi 完全不感知；索引可随时删除重建。
+- **指纹增量同步**：每次搜索前对比文件条目 sha256，**只对新增/变化的条目重新 embedding**——Pi 改共享文件后自动跟上，不重复计算存量。
+- **混合排序**：FTS5 精确匹配 + 向量语义匹配通过 **RRF（倒数排名融合）** 合并，精确词与近义命中互相补足；向量不可用自动降级 FTS5/子串。
+- **注入成本不变**：结果仍 ≤`searchMaxResults` 条、只进工具输出，不常驻上下文。
+
+启用示例（profile 的 cordis.patch.yml 覆盖）：
+
+```yaml
+- id: persona-memory
+  config:
+    vectorEnabled: true
+    embeddingProvider: remote
+    embeddingBaseUrl: https://api.openai.com/v1
+    embeddingApiKey: sk-xxx          # 或设环境变量 DSH_EMBEDDING_API_KEY
+```
+
+> 注：DeepSeek 官方 `/v1/embeddings` 接口曾出现可用性问题（见 [deepseek-ai/DeepSeek-R1#652](https://github.com/deepseek-ai/DeepSeek-R1/issues/652)），不建议依赖；任何 OpenAI 兼容 embedding 服务均可（OpenAI / SiliconFlow / Ollama 等）。想完全离线可用 `embeddingProvider: local` 并 `pnpm add @xenova/transformers`（模型约 80MB，本地推理）。
 
 ## 常驻指令（STANDING.md）
 
