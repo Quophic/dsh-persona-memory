@@ -27,6 +27,6 @@
 - **失败记忆**（`lib/failures.js`）：failures.md（hermes 文件名）§ 格式、结构化 `[category] 内容 — Failed: … — Corrected to: …`、最近 7 天/5 条注入（order 52）、纠正检测落 failure 并去重；`which: 'failure'` 字符上限=memory×2。
 - **项目级记忆**（`lib/projects.js`）：projects-memory/<项目名>/MEMORY.md（Pi 兼容根：dir 为 hermes 数据目录时解析到 ~/.pi/agent/projects-memory）；git 仓库根为项目身份（worktree 共享）+ 迁移桥；按会话 cwd 自动注入（order 53）；`project` 参数需过 `safeProjectName` 防路径穿越；项目合并用 projectCharLimit。
 - **与 Pi 共享记忆**：`MEMORY.md` / `USER.md` 磁盘格式与 pi-hermes-memory 完全兼容（`§` 分隔 + 行尾 `<!-- created=, last= -->` 注释）；`dir` 默认自动指向 `~/.pi/agent/pi-hermes-memory`（存在时），否则 `$DSH_HOME/memory`。
-- **结构**：`index.js`（插件契约）/ `lib/`（memory-store、secret-scanner、memory-tool、memory-search-tool、prompt、learning、llm-helper、consolidate、failures、projects、correction、fts、standing、standing-command）/ `test/smoke.mjs`。
+- **结构**：`index.js`（插件契约）/ `cordis.patch.yml`（bundle patch，经 `"dsh": {"bundle": {"patch": ...}}` 声明，安装后 dsh 自动激活为 profile 层）/ `lib/`（memory-store、secret-scanner、memory-tool、memory-search-tool、prompt、learning、llm-helper、consolidate、failures、projects、correction、fts、standing、standing-command）/ `test/smoke.mjs`。
 - **测试**：`node test\smoke.mjs`（85 项，用真实 hermes 文件副本验证；搜索测试自包含，不依赖真实文件内容——在线插件可能已合并改写）。测试需在 workspace 内建 junction `node_modules\@deepseek-ai` → 宿主 dsh 副本（`files` 白名单不含 node_modules，不影响安装）。
-- **安装**：`dsh plugin --profile <名> add file:<本仓库路径>` + 挂载到 profile 的 `cordis.patch.yml`（host 行，全局生效）。**file: 安装是真实副本，改代码后必须重新 `pnpm add` 并重启 web 才生效**。
+- **安装**：`dsh plugin --profile <名> add file:<本仓库路径>`（或 npm 包名）——**bundle 自动激活，无需手动挂载**；覆盖配置在 profile 的 cordis.patch.yml 按 id 覆盖。**file: 安装是真实副本，改代码后必须重新 `pnpm add` 并重启 web 才生效**。

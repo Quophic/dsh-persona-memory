@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-memory",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Persistent long-term persona memory for DeepSeek Harness: MEMORY.md/USER.md storage, memory + memory_search tools, per-request context injection, and secret scanning. Ported in spirit from pi-hermes-memory.",
   "type": "module",
   "main": "index.js",
@@ -10,6 +10,7 @@
   "files": [
     "index.js",
     "lib",
+    "cordis.patch.yml",
     "README.md"
   ],
   "license": "MIT",
@@ -19,6 +20,11 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "keywords": [
     "dsh",

@@ -110,20 +110,23 @@
 
 ## 安装到 DSH profile
 
+插件声明了 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`，安装后 dsh **自动激活**为 profile 层（无需手动挂载）：
+
 ```bash
-# 1. 把插件装进 profile（以 web 为例；发布后可用包名）
+# 安装（本地路径开发 / npm 发布版均可）
 dsh plugin --profile web add file:E:/GitHub/lian_dsh
 # 或：dsh plugin --profile web add dsh-persona-memory
 
-# 2. 在 profile 的 cordis.patch.yml 里挂载（host 平面，全局可见）：
-# - insert:
-#     - id: persona-memory
-#       name: 'dsh-persona-memory'
-#       config:
-#         # 默认自动指向 ~/.pi/agent/pi-hermes-memory（若存在），否则 ~/.dsh/memory
-#         dir: C:/Users/Quophic/.pi/agent/pi-hermes-memory
+# 重启 dsh web
+dsh --profile web
+```
 
-# 3. 重启 dsh web（dsh --profile web）
+如需覆盖配置（如 `dir`），在 profile 的 `cordis.patch.yml` 里按 id 覆盖即可（bundle 行在后层会被 profile 行覆盖）：
+
+```yaml
+- id: persona-memory
+  config:
+    dir: C:/Users/Quophic/.pi/agent/pi-hermes-memory
 ```
 
 ## 配置（均可选）

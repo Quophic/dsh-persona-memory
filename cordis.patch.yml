@@ -1,0 +1,7 @@
+# dsh-persona-memory bundle patch — auto-activates the plugin when this
+# package is installed into a dsh profile. Declared via package.json:
+#   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+# A profile's own cordis.patch.yml can still override this row by id.
+- insert:
+    - id: persona-memory
+      name: 'dsh-persona-memory'
