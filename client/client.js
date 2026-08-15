@@ -87,19 +87,21 @@ window.__ModuleLoader__.load({
     }
     // 编辑用多行输入框：按内容高度自动展开，完整显示全部文字。
     // 最小 3 行，最大 300px 内滚动；内容变化时重新测量。
-    function textarea(value, onChange, placeholder) {
+    // 必须是独立组件：hooks（useRef/useLayoutEffect）归属组件自身，
+    // 写成普通函数会在条件渲染时崩 React error #310。
+    function TextArea(props) {
       const ref = React.useRef(null);
       React.useLayoutEffect(() => {
         const el = ref.current;
         if (!el) return;
         el.style.height = 'auto';
         el.style.height = Math.min(el.scrollHeight, 300) + 'px';
-      }, [value]);
+      }, [props.value]);
       return React.createElement('textarea', {
         ref,
-        value,
-        onChange: (e) => onChange(e.target.value),
-        placeholder,
+        value: props.value,
+        onChange: (e) => props.onChange(e.target.value),
+        placeholder: props.placeholder,
         rows: 3,
         style: {
           width: '100%',
@@ -276,7 +278,7 @@ window.__ModuleLoader__.load({
           const isConfirm = confirmDel && confirmDel.which === which && confirmDel.index === i;
           if (isEditing) {
             return React.createElement('div', { key: which + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-              textarea(editing.text, (v) => setEditing({ which, index: i, text: v }), '条目内容'),
+              React.createElement(TextArea, { value: editing.text, onChange: (v) => setEditing({ which, index: i, text: v }), placeholder: '条目内容' }),
               React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
                 btn('保存', () => mutate('update', { which, index: i, text: editing.text })),
                 btn('取消', () => setEditing(null)),
@@ -321,7 +323,7 @@ window.__ModuleLoader__.load({
           const isEditing = standingEdit && standingEdit.index === i;
           if (isEditing) {
             return React.createElement('div', { key: 'st' + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-              textarea(standingEdit.text, (v) => setStandingEdit({ index: i, text: v }), '指令内容'),
+              React.createElement(TextArea, { value: standingEdit.text, onChange: (v) => setStandingEdit({ index: i, text: v }), placeholder: '指令内容' }),
               React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
                 btn('保存', () => mutate('standingUpdate', { index: i, text: standingEdit.text })),
                 btn('取消', () => setStandingEdit(null)),
