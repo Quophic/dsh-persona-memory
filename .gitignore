@@ -6,3 +6,6 @@ node_modules/
 
 # npm
 *.tgz
+
+# vision toolkit runtime temp (pasted images etc.)
+.dsh-vision-toolkit/
