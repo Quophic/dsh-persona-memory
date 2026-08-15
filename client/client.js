@@ -85,6 +85,42 @@ window.__ModuleLoader__.load({
         },
       });
     }
+    // 编辑用多行输入框：按内容高度自动展开，完整显示全部文字。
+    // 最小 3 行，最大 300px 内滚动；内容变化时重新测量。
+    function textarea(value, onChange, placeholder) {
+      const ref = React.useRef(null);
+      React.useLayoutEffect(() => {
+        const el = ref.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 300) + 'px';
+      }, [value]);
+      return React.createElement('textarea', {
+        ref,
+        value,
+        onChange: (e) => onChange(e.target.value),
+        placeholder,
+        rows: 3,
+        style: {
+          width: '100%',
+          boxSizing: 'border-box',
+          padding: '8px 10px',
+          borderRadius: 6,
+          fontSize: 13,
+          lineHeight: 1.5,
+          border: '1px solid var(--dsw-alias-border-l2)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+          color: 'var(--dsw-alias-label-primary)',
+          resize: 'vertical',
+          minHeight: 68,
+          maxHeight: 300,
+          overflowY: 'auto',
+          fontFamily: 'inherit',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        },
+      });
+    }
     function meter(pct) {
       return React.createElement('div', {
         style: { height: 4, background: 'var(--dsw-alias-border-l1)', borderRadius: 2, overflow: 'hidden', margin: '4px 0 6px' },
@@ -240,7 +276,7 @@ window.__ModuleLoader__.load({
           const isConfirm = confirmDel && confirmDel.which === which && confirmDel.index === i;
           if (isEditing) {
             return React.createElement('div', { key: which + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-              input(editing.text, (v) => setEditing({ which, index: i, text: v }), '条目内容'),
+              textarea(editing.text, (v) => setEditing({ which, index: i, text: v }), '条目内容'),
               React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
                 btn('保存', () => mutate('update', { which, index: i, text: editing.text })),
                 btn('取消', () => setEditing(null)),
@@ -285,7 +321,7 @@ window.__ModuleLoader__.load({
           const isEditing = standingEdit && standingEdit.index === i;
           if (isEditing) {
             return React.createElement('div', { key: 'st' + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-              input(standingEdit.text, (v) => setStandingEdit({ index: i, text: v }), '指令内容'),
+              textarea(standingEdit.text, (v) => setStandingEdit({ index: i, text: v }), '指令内容'),
               React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
                 btn('保存', () => mutate('standingUpdate', { index: i, text: standingEdit.text })),
                 btn('取消', () => setStandingEdit(null)),
