@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-memory",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Persistent long-term persona memory for DeepSeek Harness: MEMORY.md/USER.md storage, memory + memory_search tools, per-request context injection, secret scanning, and a WebUI memory-management settings page. Ported in spirit from pi-hermes-memory.",
   "type": "module",
   "main": "index.js",
