@@ -33,4 +33,29 @@
 - **测试**：`node test\smoke.mjs`（111 项，用真实 hermes 文件副本验证；搜索测试自包含，不依赖真实文件内容——在线插件可能已合并改写）。测试需在 workspace 内建 junction `node_modules\@deepseek-ai` → 宿主 dsh 副本（`files` 白名单不含 node_modules，不影响安装）。含工具层测试（memory-tool execute 直连项目 store）、并发写测试与向量索引测试（假 embedding provider 验证增量同步/余弦/RRF）。
 - **写入并发安全**：`lib/memory-store.js` 的 add/update/remove 走**单锁原子 `mutate`**（一次 withLock 内完成读-改-写，`{ next?, value }` 返回协议），杜绝并发工具调用互相覆盖；写前**文件指纹预检**（sha256，对照 Pi 的 ExternalMemoryWriteConflict）——若外部（Pi/手动编辑）在我们读后改写了文件，不覆盖、重试一次、仍冲突则返回 `conflict: true`。只读（read/search/listRaw）和纯写（rewrite/replaceEntries）走各自锁。
 - **与 Pi 字节兼容（对齐 v0.9.4 实测）**：`\n§\n` 分隔、`<!-- created=, last=, project64= -->` 元数据、**无尾随换行**（hermes saveToDisk 不加 `\n`）、`charCount` = `entries.join(delimiter).length`（含分隔符）、USER 上限默认 5000、容量超限**拒绝写入**（overflow: true，tool 层可先合并后重试）、failure 去重按 `(text, project)`、注入包 `<memory-context>` 围栏。扫描器/STANDING/项目路径与 Pi 逐项一致。
-- **安装**：`dsh plugin --profile <名> add file:<本仓库路径>`（或 npm 包名）——**bundle 自动激活，无需手动挂载**；覆盖配置在 profile 的 cordis.patch.yml 按 id 覆盖。**file: 安装是真实副本，改代码后必须重新 `pnpm add` 并重启 web 才生效**。
+- **安装**：`dsh plugin --profile <名> add file:<本仓库路径>`（或 npm 包名）——**bundle 自动激活，无需手动挂载**；覆盖配置在 profile 的 cordis.patch.yml 按 id 覆盖。**file: 安装是真实副本，改代码后必须重新安装并重启 web 才生效**。
+
+## 迭代与上线 SOP（固定流程，每次照做）
+
+**阶段一：UI/逻辑快速迭代期（免重启）**——用动态 Cordis 插件（`cordis_define` kind:new 一次 + kind:existing 追加迭代），双勾授权后 update 免批准，改完秒生效。参考 `dev/memadmin-v10.js`。定稿后才走阶段二。
+
+**阶段二：固化进 bundle（正式发布，需要重启 web）**
+
+1. **改代码**：`index.js`（插件契约）/ `lib/*.js`（Host，Node 原生 API）/ `client/client.js`（预构建 bundle）。
+2. **升版本**：`package.json` version 递增（每次上线必须升，否则 pnpm store 判定"无变化"可能不刷新副本）。
+3. **同步文档**：AGENTS.md 功能描述 + README.md 功能表/配置表。
+4. **验证**：`node test\smoke.mjs`（111 项，exit=0）+ `node --check` 三个入口文件 + 模块级端到端测试（备份/恢复/patch 写回用临时目录，**测试内严禁删真实数据目录**）。
+5. **重装**（⚠️ 必做，pnpm 有 store 缓存）：
+   ```bash
+   dsh plugin --profile web remove dsh-persona-memory   # 先 remove
+   dsh plugin --profile web add file:E:\GitHub\lian_dsh   # 再 add，强制拿新副本
+   ```
+   验证：`<profile>/node_modules/dsh-persona-memory/package.json` version 与仓库一致、`lib/admin.js` 字节数与仓库一致。
+6. **重启 web**：杀 `dsh web` 进程（`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ? CommandLine -match 'dsh'`）→ 同参数重启 → 刷新 GUI。
+7. **验证页面**：设置页「记忆管理」出现六张卡；动态插件随进程消失无需手动 undefine。
+8. **git 提交**：`git add -A && git commit`，message 带版本号。
+
+**常见坑**
+- pnpm `add file:` 复用 store 缓存 → 装到旧版本/旧字节（现象：version 没变、admin.js 长度不对）→ **先 remove 再 add**，别只 add。
+- 改 client.js 后必须重装+重启 web 才生效（预构建产物按包分发）；**bundle 无 harness.handle**，Client↔Host 走 webServer 路由 + fetch。
+- 备份目录 `$DSH_HOME/memory-backup/latest/` 是**真实数据**，测试/清理时先确认，删了要立即 `backupAll` 重建。
