@@ -27,7 +27,7 @@ import { renderRecentFailures } from './lib/failures.js';
 import { createMemoryStore } from './lib/memory-store.js';
 import { registerMemorySearchTool } from './lib/memory-search-tool.js';
 import { registerMemoryTool } from './lib/memory-tool.js';
-import { makeAdminRoutes, profilePatchPath } from './lib/admin.js';
+import { makeAdminRoutes, profilePatchPath, startAutoProtect } from './lib/admin.js';
 import { renderMemoryBlock } from './lib/prompt.js';
 import { createFtsIndex } from './lib/fts.js';
 import { createVectorIndex } from './lib/vector-index.js';
@@ -109,6 +109,9 @@ function apply(ctx, config) {
     embeddingRemoteHost: 'https://huggingface.co', // mirror: https://hf-mirror.com
     // admin settings page: profile whose cordis.patch.yml receives config writes
     adminProfile: 'web',
+    // auto-protect: periodic backup (minutes; 0=off) + Pi-loss fallback
+    autoBackupMin: 60,
+    autoSwitchOnPiLoss: true,
     ...(config ?? {}),
   };
   cfg.dir = resolveDir(config); // explicit config.dir wins; defaults re-resolved
@@ -169,6 +172,18 @@ function apply(ctx, config) {
     for (const route of routes) {
       ctx.webServer.register(route);
     }
+
+    // 自动保护：定时备份（autoBackupMin 分钟一次，只保留最新一份）+ Pi
+    // 记忆丢失自动切换（Pi 的 MEMORY.md 曾存在但消失 → 切到本地 + 恢复）。
+    // ctx.timer 是 Cordis 提供的 timer 服务，宿主侧可用；兜底 node setInterval。
+    const timerService = ctx.get('timer');
+    const disposer = startAutoProtect({
+      cfg,
+      profilePatch: profilePatchPath(profileName),
+      log: (s) => ctx.logger.info(s),
+      setInterval: (fn, delay) => (timerService ? timerService.interval(fn, delay) : setInterval(fn, delay)),
+    });
+    ctx.effect(() => disposer);
   }
 
   if (cfg.standingEnabled) {

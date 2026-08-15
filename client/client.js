@@ -85,6 +85,24 @@ window.__ModuleLoader__.load({
         },
       });
     }
+    function numberInput(value, onChange, placeholder) {
+      return React.createElement('input', {
+        type: 'number',
+        value: value === undefined || value === null ? '' : value,
+        onChange: (e) => onChange(e.target.value),
+        placeholder,
+        style: {
+          width: '100%',
+          boxSizing: 'border-box',
+          padding: '6px 10px',
+          borderRadius: 6,
+          fontSize: 13,
+          border: '1px solid var(--dsw-alias-border-l2)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+          color: 'var(--dsw-alias-label-primary)',
+        },
+      });
+    }
     // 编辑用多行输入框：按内容高度自动展开，完整显示全部文字。
     // 最小 3 行，最大 300px 内滚动；内容变化时重新测量。
     // 必须是独立组件：hooks（useRef/useLayoutEffect）归属组件自身，
@@ -146,12 +164,16 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [editing, setEditing] = React.useState(null);
       const [confirmDel, setConfirmDel] = React.useState(null);
+      const [projOpen, setProjOpen] = React.useState(null);
+      const [projEdit, setProjEdit] = React.useState(null);
+      const [projConfirm, setProjConfirm] = React.useState(null);
       const [standingEdit, setStandingEdit] = React.useState(null);
       const [newStanding, setNewStanding] = React.useState('');
-      const [open, setOpen] = React.useState({ standing: true, files: true, indexes: true });
+      const [open, setOpen] = React.useState({ standing: true, files: true, indexes: true, projects: false, backups: true, config: false });
       const [notice, setNotice] = React.useState(null);
       const [cfgForm, setCfgForm] = React.useState(null);
       const [modelStatus, setModelStatus] = React.useState(null);
+      const [confirmRestore, setConfirmRestore] = React.useState(false);
 
       const load = React.useCallback(async () => {
         setBusy(true);
@@ -159,14 +181,20 @@ window.__ModuleLoader__.load({
         try {
           const s = await api('/status', undefined, 'GET');
           setState(s);
-          if (s && s.config) {
-            setCfgForm({
-              vectorEnabled: s.config.vectorEnabled !== false,
-              embeddingProvider: s.config.embeddingProvider || 'local',
-              embeddingModel: s.config.embeddingModel || 'Xenova/bge-small-zh-v1.5',
-              embeddingRemoteHost: s.config.embeddingRemoteHost || 'https://huggingface.co',
-              embeddingCacheDir: s.config.embeddingCacheDir || '',
-            });
+          if (s && s.config && Array.isArray(s.schema)) {
+            const next = {};
+            for (const f of s.schema) {
+              if (!(f.key in s.config)) continue;
+              const v = s.config[f.key];
+              next[f.key] = f.type === 'number'
+                ? (v === undefined || v === null ? '' : v)
+                : (v === undefined || v === null ? '' : v);
+            }
+            // fallbacks so the form never shows blanks for the common ones
+            if (!('embeddingModel' in next) || next.embeddingModel === '') next.embeddingModel = 'Xenova/bge-small-zh-v1.5';
+            if (!('embeddingProvider' in next) || next.embeddingProvider === '') next.embeddingProvider = 'local';
+            if (!('embeddingRemoteHost' in next) || next.embeddingRemoteHost === '') next.embeddingRemoteHost = 'https://huggingface.co';
+            setCfgForm(next);
           }
         } catch (e) {
           setError(String((e && e.message) || e));
@@ -200,13 +228,16 @@ window.__ModuleLoader__.load({
         setError(null);
         setNotice(null);
         try {
-          const res = await api('/' + action, payload);
+          const res = await api('/' + action, payload || {});
           if (res && res.error) setNotice('操作失败: ' + res.error);
           else setNotice((res && res.message) || '完成');
           setEditing(null);
           setConfirmDel(null);
+          setProjEdit(null);
+          setProjConfirm(null);
           setStandingEdit(null);
           setNewStanding('');
+          setConfirmRestore(false);
           await load();
         } catch (e) {
           setError(String((e && e.message) || e));
@@ -250,6 +281,8 @@ window.__ModuleLoader__.load({
       const idx = state.indexes || {};
       const m = state.models || {};
       const standing = (state.standing || {}).instructions || [];
+      const projects = state.projects || [];
+      const backups = state.backups || [];
       const whichName = { memory: 'MEMORY.md', user: 'USER.md', failure: 'failures.md' };
 
       const card = (key, title, summary, children) => {
@@ -355,6 +388,76 @@ window.__ModuleLoader__.load({
         }),
       );
 
+      const projectRows = () => {
+        if (projects.length === 0) {
+          return React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)', padding: '6px 0' } }, '（暂无项目记忆，会话在项目目录运行时会自动创建）');
+        }
+        return projects.map((proj) => {
+          const isOpen = projOpen === proj.name;
+          const entries = proj.entryList || [];
+          return React.createElement('div', { key: proj.name, style: { borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+            React.createElement('div', {
+              onClick: () => setProjOpen(isOpen ? null : proj.name),
+              style: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 0', cursor: 'pointer', userSelect: 'none' },
+            },
+              React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', transition: 'transform 0.2s', transform: isOpen ? 'rotate(90deg)' : 'none' } }, '\u25B8'),
+              React.createElement('span', { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, proj.name),
+              React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
+                proj.exists ? proj.entries + ' 条 / ' + proj.chars + ' 字符' : '无文件'),
+            ),
+            isOpen ? React.createElement('div', { style: { padding: '0 0 10px 20px' } },
+              entries.length === 0
+                ? React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)', padding: '6px 0' } }, '（无条目）')
+                : entries.map((entry, i) => {
+                    const isEditing = projEdit && projEdit.project === proj.name && projEdit.index === i;
+                    const isConfirm = projConfirm && projConfirm.project === proj.name && projConfirm.index === i;
+                    if (isEditing) {
+                      return React.createElement('div', { key: proj.name + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+                        React.createElement(TextArea, { value: projEdit.text, onChange: (v) => setProjEdit({ project: proj.name, index: i, text: v }), placeholder: '条目内容' }),
+                        React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
+                          btn('保存', () => mutate('projectUpdate', { project: proj.name, index: i, text: projEdit.text })),
+                          btn('取消', () => setProjEdit(null)),
+                        ),
+                      );
+                    }
+                    if (isConfirm) {
+                      return React.createElement('div', { key: proj.name + i, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: 13 } },
+                        React.createElement('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', marginBottom: 6 } }, '确认删除这条? ' + String(entry.text || '').slice(0, 60)),
+                        React.createElement('div', { style: { display: 'flex', gap: 8 } },
+                          btn('删除', () => mutate('projectDelete', { project: proj.name, index: i }), { style: { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' } }),
+                          btn('取消', () => setProjConfirm(null)),
+                        ),
+                      );
+                    }
+                    return React.createElement('div', { key: proj.name + i, style: { padding: '6px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+                      React.createElement('span', {
+                        style: {
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          flex: 1,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                        },
+                      }, String(entry.text || '')),
+                      React.createElement('div', { style: { display: 'flex', gap: 6, flexShrink: 0 } },
+                        btn('编辑', () => setProjEdit({ project: proj.name, index: i, text: String(entry.text || '') }), { style: { padding: '3px 8px', fontSize: 12 } }),
+                        btn('删除', () => setProjConfirm({ project: proj.name, index: i, text: String(entry.text || '') }), { style: { padding: '3px 8px', fontSize: 12 } }),
+                      ),
+                    );
+                  }),
+            ) : null,
+          );
+        });
+      };
+
+      const projectsBody = () => React.createElement('div', null,
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', padding: '6px 0' } }, '按会话工作目录自动归属项目；文件与 Pi 的 projects-memory 兼容共享'),
+        React.createElement('div', { style: { marginTop: 4 } }, projectRows()),
+      );
+
       const modelStatusLine = () => {
         if (!cfgForm || !cfgForm.embeddingModel || !cfgForm.embeddingModel.trim()) return null;
         if (modelStatus && modelStatus.checking) {
@@ -393,7 +496,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', fontSize: 13 } },
             React.createElement('input', {
               type: 'checkbox',
-              checked: cfgForm.vectorEnabled,
+              checked: !!cfgForm.vectorEnabled,
               onChange: (e) => setCfgForm(Object.assign({}, cfgForm, { vectorEnabled: e.target.checked })),
             }),
             React.createElement('span', null, '启用向量搜索'),
@@ -409,9 +512,9 @@ window.__ModuleLoader__.load({
                 style: {
                   padding: '3px 10px',
                   fontSize: 12,
-                  background: 'var(--dsw-alias-bg-layer-2)',
-                  borderColor: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l2)',
-                  color: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)',
+                  background: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                  borderColor: active ? 'transparent' : 'var(--dsw-alias-border-l2)',
+                  color: active ? '#fff' : 'var(--dsw-alias-label-primary)',
                   fontWeight: active ? 600 : 400,
                 },
               });
@@ -424,10 +527,6 @@ window.__ModuleLoader__.load({
           input(cfgForm.embeddingRemoteHost, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingRemoteHost: v })), 'https://huggingface.co 或 https://hf-mirror.com'),
           React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '10px 0 4px' } }, '模型缓存目录'),
           input(cfgForm.embeddingCacheDir, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingCacheDir: v })), '默认 $DSH_HOME/models'),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 } },
-            btn('保存配置', saveConfig, { style: { background: 'var(--dsw-alias-brand-primary)', borderColor: 'transparent', color: '#fff' } }),
-            React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-state-warn-primary)' } }, '保存后需重启 web 生效'),
-          ),
         ) : React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)' } }, '读取配置中...'),
 
         React.createElement('div', {
@@ -446,6 +545,111 @@ window.__ModuleLoader__.load({
         m.dir ? React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginTop: 6 } }, '目录: ' + m.dir) : null,
       );
 
+      const backupsBody = () => React.createElement('div', null,
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', padding: '6px 0' } },
+          '备份目录: ' + (state.backupDir || '') + '（与 Pi 完全隔离，只保留最新一份快照）'),
+        backups.length === 0
+          ? React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)', padding: '8px 0' } }, '（尚无备份，可手动备份或等待自动备份）')
+          : backups.map((b) => React.createElement('div', {
+              key: b.name,
+              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', fontSize: 13, borderBottom: '1px solid var(--dsw-alias-border-l1)' },
+            },
+              React.createElement('span', null, b.name),
+              React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, b.files + ' 个文件'),
+            )),
+        React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', padding: '12px 0 2px' } },
+          btn('立即备份', () => mutate('backup', {}), { style: { background: 'var(--dsw-alias-bg-layer-2)' } }),
+          confirmRestore
+            ? React.createElement(React.Fragment, null,
+                React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-state-warn-primary)' } }, '确认用最新备份覆盖当前记忆?'),
+                btn('确认恢复', () => mutate('restoreLatest', {}), { style: { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' } }),
+                btn('取消', () => setConfirmRestore(false)),
+              )
+            : btn('从最新备份恢复', () => setConfirmRestore(true), { style: { background: 'var(--dsw-alias-bg-layer-2)' } }),
+        ),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', padding: '6px 0' } },
+          '自动备份间隔由插件配置中的「自动备份间隔」控制；Pi 记忆丢失时默认自动切回本地并恢复。'),
+      );
+
+      const configBody = () => {
+        if (!cfgForm || !Array.isArray(state.schema)) {
+          return React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)' } }, '读取配置中...');
+        }
+        const groups = [];
+        const order = [];
+        for (const f of state.schema) {
+          if (!order.includes(f.group)) order.push(f.group);
+        }
+        for (const g of order) {
+          groups.push(React.createElement('div', { key: g },
+            React.createElement('div', {
+              style: {
+                fontSize: 12,
+                fontWeight: 600,
+                color: 'var(--dsw-alias-label-secondary)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                margin: '14px 0 8px',
+              },
+            }, g),
+            state.schema.filter((f) => f.group === g).map((f) => {
+              const key = f.key;
+              const val = cfgForm[key];
+              const setVal = (v) => setCfgForm(Object.assign({}, cfgForm, { [key]: v }));
+              let control = null;
+              if (f.type === 'bool') {
+                control = React.createElement('input', {
+                  type: 'checkbox',
+                  checked: !!val,
+                  onChange: (e) => setVal(e.target.checked),
+                });
+              } else if (f.type === 'number') {
+                control = numberInput(val, setVal, '');
+              } else if (f.type === 'select') {
+                control = React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+                  (f.options || []).map((opt) => {
+                    const active = String(val) === opt;
+                    return btn(opt, () => setVal(opt), {
+                      style: {
+                        padding: '3px 10px',
+                        fontSize: 12,
+                        background: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                        borderColor: active ? 'transparent' : 'var(--dsw-alias-border-l2)',
+                        color: active ? '#fff' : 'var(--dsw-alias-label-primary)',
+                        fontWeight: active ? 600 : 400,
+                      },
+                    });
+                  }),
+                );
+              } else {
+                control = key === 'embeddingModel'
+                  ? React.createElement('div', null, input(val, setVal, '模型名'), modelStatusLine())
+                  : input(val, setVal, '');
+              }
+              return React.createElement('div', { key, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 } },
+                  f.type === 'bool' ? control : React.createElement('span', { style: { minWidth: 0, flex: 1 } }, f.label),
+                  f.type === 'bool'
+                    ? React.createElement('span', { style: { flex: 1 } }, f.label)
+                    : null,
+                ),
+                f.type !== 'bool' ? React.createElement('div', { style: { marginTop: 6 } }, control) : null,
+                f.help ? React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, f.help) : null,
+              );
+            }),
+          ));
+        }
+        return React.createElement('div', null,
+          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', padding: '8px 0' } },
+            '所有配置写回当前 profile 的 cordis.patch.yml（persona-memory 段），重启 web 后生效'),
+          groups,
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 } },
+            btn('保存全部配置', saveConfig, { style: { background: 'var(--dsw-alias-brand-primary)', borderColor: 'transparent', color: '#fff' } }),
+            React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-state-warn-primary)' } }, '保存后需重启 web 生效'),
+          ),
+        );
+      };
+
       const standingSummary = standing.length + ' 条' + ((state.standing || {}).chars ? ' · ' + (state.standing || {}).chars + ' 字符' : '');
       const memStore = st.memory || {};
       const usrStore = st.user || {};
@@ -455,6 +659,9 @@ window.__ModuleLoader__.load({
         + (failStore.exists ? 'FAIL ' + failStore.usagePct + '%' : '');
       const idxSummary = (idx.fts && idx.fts.exists ? 'FTS5 ' + fmtBytes(idx.fts.size) : 'FTS5 未生成') + ' · '
         + (idx.vector && idx.vector.exists ? '向量 ' + fmtBytes(idx.vector.size) : '向量未启用');
+      const projectsSummary = projects.length + ' 个';
+      const backupsSummary = backups.length > 0 ? backups[0].files + ' 文件' : '无';
+      const configSummary = (state.schema || []).length + ' 项';
 
       return React.createElement('div', { style: { maxWidth: 720 } },
         React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
@@ -484,7 +691,13 @@ window.__ModuleLoader__.load({
 
         card('files', '记忆文件', filesSummary, filesBody()),
 
+        card('projects', '项目记忆', projectsSummary, projectsBody()),
+
         card('indexes', '检索索引', idxSummary, indexesBody()),
+
+        card('backups', '本地备份', backupsSummary, backupsBody()),
+
+        card('config', '插件配置', configSummary, configBody()),
       );
     }
 
