@@ -27,6 +27,7 @@ import { renderRecentFailures } from './lib/failures.js';
 import { createMemoryStore } from './lib/memory-store.js';
 import { registerMemorySearchTool } from './lib/memory-search-tool.js';
 import { registerMemoryTool } from './lib/memory-tool.js';
+import { makeAdminRoutes, profilePatchPath } from './lib/admin.js';
 import { renderMemoryBlock } from './lib/prompt.js';
 import { createFtsIndex } from './lib/fts.js';
 import { createVectorIndex } from './lib/vector-index.js';
@@ -37,7 +38,7 @@ import { createStandingStore } from './lib/standing.js';
 const name = 'dsh-persona-memory';
 
 /** Services required by this plugin (harness host plane). */
-const inject = ['tools', 'systemPrompt', 'commands'];
+const inject = ['tools', 'systemPrompt', 'commands', 'webServer'];
 
 const PI_HERMES_DIR = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
 
@@ -106,6 +107,8 @@ function apply(ctx, config) {
     // local provider: model auto-downloads to embeddingCacheDir on first use
     embeddingCacheDir: '', // default: $DSH_HOME/models
     embeddingRemoteHost: 'https://huggingface.co', // mirror: https://hf-mirror.com
+    // admin settings page: profile whose cordis.patch.yml receives config writes
+    adminProfile: 'web',
     ...(config ?? {}),
   };
   cfg.dir = resolveDir(config); // explicit config.dir wins; defaults re-resolved
@@ -150,6 +153,23 @@ function apply(ctx, config) {
   registerMemoryTool(ctx, store, cfg, getProjectStore);
   registerMemorySearchTool(ctx, store, cfg, getProjectStore, fts, vector);
   registerLifecycleHooks(ctx, store, cfg);
+
+  // 记忆管理设置页（browser half）：/api/persona-memory/* 路由。
+  // 配置写回目标 = 当前 profile 的 cordis.patch.yml 中 persona-memory 段。
+  if (ctx.webServer) {
+    const profileName = cfg.adminProfile ?? 'web';
+    const routes = makeAdminRoutes({
+      store,
+      standing,
+      vector,
+      cfg,
+      profilePatch: profilePatchPath(profileName),
+      log: (s) => ctx.logger.info(s),
+    });
+    for (const route of routes) {
+      ctx.webServer.register(route);
+    }
+  }
 
   if (cfg.standingEnabled) {
     registerStandingCommand(ctx, standing);

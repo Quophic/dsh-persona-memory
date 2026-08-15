@@ -26,6 +26,7 @@
 | `memory_search`（混合检索） | 优先 **FTS5 + 语义向量（RRF 融合）**：FTS5 全文索引（`<dir>/.memory-index.sqlite`，mtime 自动重建）+ 向量索引（`vectorIndexDir` 下 `.memory-vec.sqlite`，只存 embedding、指纹增量同步、纯 JS 余弦）；向量未启用时走 FTS5，SQLite 不可用时回退子串扫描；结果始终 ≤`searchMaxResults` 条、只进工具输出，注入成本不随检索方式增加 |
 | 用量提示 | 所有 `memory` 操作返回用量百分比；达 90%（`usageNudgeThreshold`）提醒用 `rewrite` 合并 |
 | `/standing` 命令 | 用户管理常驻指令（列出 / add / remove / clear） |
+| WebUI 记忆管理页 | 设置页「记忆管理」区块（`settings.section` slot）：常驻指令增删改、三记忆文件条目编辑/删除、FTS5/向量索引状态与重建、向量搜索配置（开关/模型/下载源/缓存目录，写回 profile `cordis.patch.yml`）、已下载模型扫描与缓存检测 |
 
 ### C. 自动学习机制
 
@@ -154,6 +155,7 @@ dsh --profile web
 | `embeddingModel` | `text-embedding-3-small` | embedding 模型名（local 默认 `Xenova/all-MiniLM-L6-v2`） |
 | `embeddingCacheDir` | `$DSH_HOME/models` | local 模型缓存目录（首次自动下载到此处） |
 | `embeddingRemoteHost` | `https://huggingface.co` | local 模型下载源；大陆可用 `https://hf-mirror.com` |
+| `adminProfile` | `web` | 记忆管理页配置写回的目标 profile（`~/.dsh/profiles/<名>/cordis.patch.yml`） |
 | `learnEnabled` | `true` | 是否启用后台自动学习 |
 | `learnIntervalTurns` | `10` | 每 N 轮（turn/end）触发一次复习 |
 | `learnRecentTurns` | `2` | 每次复习取最近多少个轮次的对话 |
