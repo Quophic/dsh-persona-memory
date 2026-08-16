@@ -478,75 +478,9 @@ window.__ModuleLoader__.load({
           React.createElement('span', null, '向量索引 (embedding)'),
           React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, idx.vector && idx.vector.exists ? fmtBytes(idx.vector.size) : '未启用')),
         React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0 2px' } },
-          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '索引可随时重建，不影响记忆本体'),
+          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '索引可随时重建，不影响记忆本体；向量搜索相关配置见下方「插件配置」卡'),
           btn('重建向量索引', () => mutate('rebuildVector', {}), { style: { background: 'var(--dsw-alias-bg-layer-2)' } }),
         ),
-
-        React.createElement('div', {
-          style: {
-            fontSize: 12,
-            fontWeight: 600,
-            color: 'var(--dsw-alias-label-secondary)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            margin: '14px 0 8px',
-          },
-        }, '向量搜索配置'),
-        cfgForm ? React.createElement('div', null,
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', fontSize: 13 } },
-            React.createElement('input', {
-              type: 'checkbox',
-              checked: !!cfgForm.vectorEnabled,
-              onChange: (e) => setCfgForm(Object.assign({}, cfgForm, { vectorEnabled: e.target.checked })),
-            }),
-            React.createElement('span', null, '启用向量搜索'),
-          ),
-          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginBottom: 4 } }, '当前模型'),
-          input(cfgForm.embeddingModel, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingModel: v })), 'embedding 模型名'),
-          modelStatusLine(),
-          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '8px 0 4px' } }, '已下载模型（点击选用）'),
-          React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 10px' } },
-            (m.models || []).map((mo) => {
-              const active = cfgForm.embeddingModel === mo.name;
-              return btn(mo.name, () => setCfgForm(Object.assign({}, cfgForm, { embeddingModel: mo.name })), {
-                style: {
-                  padding: '3px 10px',
-                  fontSize: 12,
-                  background: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-2)',
-                  borderColor: active ? 'transparent' : 'var(--dsw-alias-border-l2)',
-                  color: active ? '#fff' : 'var(--dsw-alias-label-primary)',
-                  fontWeight: active ? 600 : 400,
-                },
-              });
-            }),
-            m.models && m.models.length === 0
-              ? React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '缓存中暂无模型')
-              : null,
-          ),
-          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginBottom: 4 } }, '下载源（镜像地址）'),
-          input(cfgForm.embeddingRemoteHost, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingRemoteHost: v })), 'https://huggingface.co 或 https://hf-mirror.com'),
-          React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '10px 0 4px' } }, '模型缓存目录'),
-          input(cfgForm.embeddingCacheDir, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingCacheDir: v })), '默认 $DSH_HOME/models'),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 } },
-            btn('保存配置', saveConfig, { style: { background: 'var(--dsw-alias-brand-primary)', borderColor: 'transparent', color: '#fff' } }),
-            React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-state-warn-primary)' } }, '保存后需重启 web 生效'),
-          ),
-        ) : React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)' } }, '读取配置中...'),
-
-        React.createElement('div', {
-          style: {
-            fontSize: 12,
-            fontWeight: 600,
-            color: 'var(--dsw-alias-label-secondary)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            margin: '16px 0 8px',
-          },
-        }, '本地模型缓存'),
-        m.models && m.models.length > 0
-          ? m.models.map((mo) => React.createElement('div', { key: mo.name, style: { padding: '6px 0', fontSize: 13, borderBottom: '1px solid var(--dsw-alias-border-l1)' } }, mo.name))
-          : React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)' } }, (m.dir ? '目录为空' : '未找到模型目录')),
-        m.dir ? React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginTop: 6 } }, '目录: ' + m.dir) : null,
       );
 
       const backupsBody = () => React.createElement('div', null,
@@ -627,7 +561,29 @@ window.__ModuleLoader__.load({
                 );
               } else {
                 control = key === 'embeddingModel'
-                  ? React.createElement('div', null, input(val, setVal, '模型名'), modelStatusLine())
+                  ? React.createElement('div', null,
+                      input(val, setVal, '模型名'),
+                      modelStatusLine(),
+                      React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '8px 0 4px' } }, '已下载模型（点击选用）'),
+                      React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+                        (m.models || []).map((mo) => {
+                          const active = String(val) === mo.name;
+                          return btn(mo.name, () => setVal(mo.name), {
+                            style: {
+                              padding: '3px 10px',
+                              fontSize: 12,
+                              background: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                              borderColor: active ? 'transparent' : 'var(--dsw-alias-border-l2)',
+                              color: active ? '#fff' : 'var(--dsw-alias-label-primary)',
+                              fontWeight: active ? 600 : 400,
+                            },
+                          });
+                        }),
+                        m.models && m.models.length === 0
+                          ? React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '缓存中暂无模型')
+                          : null,
+                      ),
+                    )
                   : input(val, setVal, '');
               }
               return React.createElement('div', { key, style: { padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
