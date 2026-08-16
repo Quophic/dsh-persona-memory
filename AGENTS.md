@@ -41,7 +41,11 @@
 
 **阶段二：固化进 bundle（正式发布，需要重启 web）**
 
+0. **⚠️ 先存档动态插件最终版源码**（最重要，防止固化缺功能）：迭代定稿后、固化前，用 `cordis_inspect_self(pluginId, packageId)` 取最终 Package 的完整 host+client 源码，**保存到 `dev/<功能名>-final-<pluginId>-<pkg>.js`**（含每个卡片/路由区块的标注注释）。动态插件只在运行进程内存里，undefine 后即永久丢失——存档就是唯一对照物。
 1. **改代码**：`index.js`（插件契约）/ `lib/*.js`（Host，Node 原生 API）/ `client/client.js`（预构建 bundle）。
+   - **Client UI 渲染层逐字复制**：React 元素/卡片/交互逻辑与动态版完全相同，只替换 api 调用层（动态 `host.call` → bundle `fetch('/api/persona-memory/...')`）和包壳（动态 factory → `window.__ModuleLoader__.load`）。
+   - **Host 逻辑层必须改写**：动态在受限沙箱（`ctx.get('fs')` 服务、无 node:fs/process），bundle 有完整 node:fs；动态 `harness.handle` → bundle webServer 路由。
+   - **固化后逐卡片对照存档源码**：每张卡、每个按钮、每个配置项逐一对，不许凭记忆重写、不许删减 UI 区块。
 2. **升版本**：`package.json` version 递增（每次上线必须升，否则 pnpm store 判定"无变化"可能不刷新副本）。
 3. **同步文档**：AGENTS.md 功能描述 + README.md 功能表/配置表。
 4. **验证**：`node test\smoke.mjs`（111 项，exit=0）+ `node --check` 三个入口文件 + 模块级端到端测试（备份/恢复/patch 写回用临时目录，**测试内严禁删真实数据目录**）。
@@ -52,7 +56,7 @@
    ```
    验证：`<profile>/node_modules/dsh-persona-memory/package.json` version 与仓库一致、`lib/admin.js` 字节数与仓库一致。
 6. **重启 web**：杀 `dsh web` 进程（`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ? CommandLine -match 'dsh'`）→ 同参数重启 → 刷新 GUI。
-7. **验证页面**：设置页「记忆管理」出现六张卡；动态插件随进程消失无需手动 undefine。
+7. **验证页面**：设置页「记忆管理」出现六张卡（逐卡核对功能，重点比对存档源码的 UI 区块是否齐全）；动态插件随进程消失无需手动 undefine。
 8. **git 提交**：`git add -A && git commit`，message 带版本号。
 
 **常见坑**
