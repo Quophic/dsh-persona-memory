@@ -37,11 +37,12 @@
 
 ## 迭代与上线 SOP（固定流程，每次照做）
 
-**阶段一：UI/逻辑快速迭代期（免重启）**——用动态 Cordis 插件（`cordis_define` kind:new 一次 + kind:existing 追加迭代），双勾授权后 update 免批准，改完秒生效。参考 `dev/memadmin-v10.js`。定稿后才走阶段二。
+**阶段一：UI/逻辑快速迭代期（免重启）**——用动态 Cordis 插件（`cordis_define` kind:new 一次 + kind:existing 追加迭代），双勾授权后 update 免批准，改完秒生效。定稿后才走阶段二。
 
 **阶段二：固化进 bundle（正式发布，需要重启 web）**
 
-0. **⚠️ 先存档动态插件最终版源码**（最重要，防止固化缺功能）：迭代定稿后、固化前，用 `cordis_inspect_self(pluginId, packageId)` 取最终 Package 的完整 host+client 源码，**保存到 `dev/<功能名>-final-<pluginId>-<pkg>.js`**（含每个卡片/路由区块的标注注释）。动态插件只在运行进程内存里，undefine 后即永久丢失——存档就是唯一对照物。
+0. **⚠️ 先取动态插件最终版源码作为临时对照物**（最重要，防止固化缺功能）：迭代定稿后、固化前，用 `cordis_inspect_self(pluginId, packageId)` 取最终 Package 的完整 host+client 源码，**临时保存到 `dev/<功能名>-final.js`**（仅本次固化对照用，含每张卡/路由区块的标注注释）。动态插件只在运行进程内存里，undefine 后即永久丢失——对照物是固化期间唯一依据。
+   - **对照物用完即删**：固化完成、逐卡验证一致后，删除 `dev/` 临时文件并 `git rm`。**不要长期保留中间版本存档**——固化后 bundle 已在 git 有完整历史，git 才是唯一真源；过时存档会误导后续固化（历史教训：v10 三卡存档让固化把「配置移到插件配置卡」的 v27 定稿做反了）。
 1. **改代码**：`index.js`（插件契约）/ `lib/*.js`（Host，Node 原生 API）/ `client/client.js`（预构建 bundle）。
    - **Client UI 渲染层逐字复制**：React 元素/卡片/交互逻辑与动态版完全相同，只替换 api 调用层（动态 `host.call` → bundle `fetch('/api/persona-memory/...')`）和包壳（动态 factory → `window.__ModuleLoader__.load`）。
    - **Host 逻辑层必须改写**：动态在受限沙箱（`ctx.get('fs')` 服务、无 node:fs/process），bundle 有完整 node:fs；动态 `harness.handle` → bundle webServer 路由。
