@@ -527,6 +527,10 @@ window.__ModuleLoader__.load({
           input(cfgForm.embeddingRemoteHost, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingRemoteHost: v })), 'https://huggingface.co 或 https://hf-mirror.com'),
           React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '10px 0 4px' } }, '模型缓存目录'),
           input(cfgForm.embeddingCacheDir, (v) => setCfgForm(Object.assign({}, cfgForm, { embeddingCacheDir: v })), '默认 $DSH_HOME/models'),
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 } },
+            btn('保存配置', saveConfig, { style: { background: 'var(--dsw-alias-brand-primary)', borderColor: 'transparent', color: '#fff' } }),
+            React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-state-warn-primary)' } }, '保存后需重启 web 生效'),
+          ),
         ) : React.createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)' } }, '读取配置中...'),
 
         React.createElement('div', {
