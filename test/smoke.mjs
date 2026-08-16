@@ -71,6 +71,20 @@ check('rewrite parses hermes doc', rw.entryCount === 2, `entries=${rw.entryCount
 const back = await store.read('memory', 5000);
 check('rewrite round-trip readable', back.entryCount === 2 && back.content.includes('fact one'));
 
+// 4b. rewrite with PLAIN content containing a stray "§" glyph must stay ONE
+// entry (regression: old detection used .includes('§') after trim, so any
+// content with one "§" was misdetected as a hermes document and collapsed
+// all memory into one unformatted entry with no metadata comment).
+const stray = await store.rewrite('memory', 'plain fact about towers \u00a7 one stray glyph');
+check('rewrite stray-§ stays single entry', stray.entryCount === 1, `entries=${stray.entryCount}`);
+const strayBack = await store.read('memory', 5000);
+check('rewrite stray-§ keeps metadata', strayBack.entryCount === 1 && /<!-- created=\d{4}-\d{2}-\d{2}/.test(await store.readRawSync('memory')), JSON.stringify(strayBack));
+
+// 4c. rewrite with a hermes doc that has entries with leading § (hermes style)
+const doc2 = `\u00a7lead fact one <!-- created=2026-01-01, last=2026-01-01 -->${ENTRY_DELIMITER}\u00a7lead fact two <!-- created=2026-01-02, last=2026-01-02 -->`;
+const rw2 = await store.rewrite('memory', doc2);
+check('rewrite hermes doc with § entries', rw2.entryCount === 2, `entries=${rw2.entryCount}`);
+
 // 5. scanner
 check('scanner blocks openai key', scanContent('use sk-abcDEF0123456789abcdef0123456789 here') !== null);
 check('scanner blocks private key', scanContent('-----BEGIN RSA PRIVATE KEY-----') !== null);
