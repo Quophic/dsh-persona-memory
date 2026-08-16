@@ -58,7 +58,11 @@
    验证：`<profile>/node_modules/dsh-persona-memory/package.json` version 与仓库一致、`lib/admin.js` 字节数与仓库一致。
 6. **重启 web**：杀 `dsh web` 进程（`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ? CommandLine -match 'dsh'`）→ 同参数重启 → 刷新 GUI。
 7. **验证页面**：设置页「记忆管理」出现六张卡（逐卡核对功能，重点比对存档源码的 UI 区块是否齐全）；动态插件随进程消失无需手动 undefine。
-8. **git 提交**：`git add -A && git commit`，message 带版本号。
+8. **git 提交**（无 dev 分支，直接在 main 上）：`git add -A && git commit`（message 带版本号）→ `git push origin main` 同步远程。
+
+**git 工作流（固定，无 dev 分支）**
+- **永远只在 `main` 分支工作**——已删除 dev 分支（历史教训：dev 分支与 dev/ 中间存档一样只会误导）。开发、固化、提交全部直接在 main。
+- 每次固化完成后：`git add -A && git commit`（带版本号）→ `git push origin main`。仓库任何时候 `git status` 应为 clean。
 
 **常见坑**
 - pnpm `add file:` 复用 store 缓存 → 装到旧版本/旧字节（现象：version 没变、admin.js 长度不对）→ **先 remove 再 add**，别只 add。
