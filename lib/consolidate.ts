@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Auto-consolidation — when a store exceeds its char limit, call the session's
  * own LLM route to merge/age the entries, and commit ONLY when the result is
@@ -10,25 +9,38 @@
  * marks entries older than `consolidateStaleDays` without recent references as
  * removal candidates, and preserves user preferences and corrections first.
  */
-import { ENTRY_DELIMITER, decodeEntry } from './memory-store.js';
-import { callLlm } from './llm-helper.js';
+import { ENTRY_DELIMITER, decodeEntry, type MemoryStore } from './memory-store.js';
+import { callLlm, type LlmRoute } from './llm-helper.js';
 import { scanContent } from './secret-scanner.js';
+import type { Context } from '@deepseek-ai/cordis';
 
-/** @type {Set<string>} per-store consolidation in flight */
-const inflight = new Set();
+/** per-store consolidation in flight */
+const inflight = new Set<string>();
+
+export interface ConsolidationConfig {
+  memoryCharLimit: number;
+  userCharLimit: number;
+  failureCharLimit?: number;
+  projectCharLimit?: number;
+  enableSecretScanning: boolean;
+  autoConsolidate: boolean;
+  consolidateStaleDays: number;
+  consolidateTimeoutMs: number;
+}
 
 /**
  * Trigger consolidation for one store when it is over its char limit.
  * Fire-and-forget from callers; never throws.
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {ReturnType<import('./memory-store.js').createMemoryStore>} store
- * @param {{ provider: string, model: string }} route
- * @param {{ memoryCharLimit: number, userCharLimit: number, failureCharLimit?: number, projectCharLimit?: number, enableSecretScanning: boolean, autoConsolidate: boolean, consolidateStaleDays: number, consolidateTimeoutMs: number }} cfg
- * @param {'memory' | 'user' | 'failure'} which
- * @param {number} [limitOverride] explicit char limit (project stores use projectCharLimit)
- * @returns {Promise<{ ran: boolean, reason?: string }>}
+ * @param limitOverride explicit char limit (project stores use projectCharLimit)
  */
-export async function maybeConsolidate(ctx, store, route, cfg, which, limitOverride) {
+export async function maybeConsolidate(
+  ctx: Context,
+  store: MemoryStore,
+  route: LlmRoute,
+  cfg: ConsolidationConfig,
+  which: 'memory' | 'user' | 'failure',
+  limitOverride?: number,
+): Promise<{ ran: boolean; reason?: string }> {
   // Key the in-flight guard by the store's own file path + which, so the
   // global store and every project store consolidate independently.
   const key = `${store.fileFor(which)}:${which}`;
@@ -54,7 +66,7 @@ export async function maybeConsolidate(ctx, store, route, cfg, which, limitOverr
     );
     return { ran: true };
   } catch (err) {
-    ctx.logger.warn('[dsh-persona-memory] consolidation failed: %s', err?.message ?? String(err));
+    ctx.logger.warn('[dsh-persona-memory] consolidation failed: %s', (err as Error | undefined)?.message ?? String(err));
     return { ran: false, reason: 'error' };
   } finally {
     inflight.delete(key);
@@ -79,12 +91,9 @@ Output ONLY a JSON object, no markdown fences, no commentary:
 - If nothing is worth keeping, output {"entries": []}.`;
 
 /**
- * @param {string[]} current raw entry lines
- * @param {number} limit
- * @param {number} staleDays
- * @returns {string}
+ * @param current raw entry lines
  */
-export function buildConsolidationPrompt(current, limit, staleDays) {
+export function buildConsolidationPrompt(current: string[], limit: number, staleDays: number): string {
   const today = new Date().toISOString().split('T')[0];
   return `Character limit: ${limit}\nStale threshold: ${staleDays} days without recent references\nToday's date: ${today}\n\nCurrent entries:\n${current.join('\n')}`;
 }
@@ -92,17 +101,15 @@ export function buildConsolidationPrompt(current, limit, staleDays) {
 /**
  * Extract the JSON `{"entries": [...]}` array from the model reply
  * (exported for testing).
- * @param {unknown} reply
- * @returns {string[] | null}
  */
-export function parseConsolidatedOutput(reply) {
+export function parseConsolidatedOutput(reply: unknown): string[] | null {
   const text = String(reply ?? '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
-  let parsed;
+  let parsed: { entries?: unknown };
   try {
-    parsed = JSON.parse(text.slice(start, end + 1));
+    parsed = JSON.parse(text.slice(start, end + 1)) as { entries?: unknown };
   } catch {
     return null;
   }
@@ -114,12 +121,12 @@ export function parseConsolidatedOutput(reply) {
 
 /**
  * Safety gate before committing a consolidation (exported for testing).
- * @param {string[]} current raw entry lines
- * @param {string[] | null} next candidate raw entry lines
- * @param {{ enableSecretScanning: boolean }} cfg
- * @returns {{ ok: true, entries: string[], chars: number } | { ok: false, reason: string }}
  */
-export function validateConsolidation(current, next, cfg) {
+export function validateConsolidation(
+  current: string[],
+  next: string[] | null,
+  cfg: { enableSecretScanning: boolean },
+): { ok: true; entries: string[]; chars: number } | { ok: false; reason: string } {
   if (!next || next.length === 0) return { ok: false, reason: 'no-entries' };
   const currentChars = current.join(ENTRY_DELIMITER).length;
   const newChars = next.join(ENTRY_DELIMITER).length;

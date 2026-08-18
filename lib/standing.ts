@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Standing instructions — bounded, user-authored directives injected into
  * every session regardless of memory limits, ported from pi-hermes-memory's
@@ -26,24 +25,38 @@ import { readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { scanContent } from './secret-scanner.js';
+import { isEnoent } from './memory-store.js';
 
-/**
- * @param {{ dir: string, maxEntries: number, maxChars: number }} config
- */
-export function createStandingStore(config) {
+export interface StandingStoreConfig {
+  dir: string;
+  maxEntries: number;
+  maxChars: number;
+}
+
+export interface StandingRenderResult {
+  block: string;
+  injectedCount: number;
+  omittedCount: number;
+}
+
+export interface StandingStore {
+  add(text: string): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }>;
+  remove(position: number): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }>;
+  clear(): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }>;
+  read(): Promise<string[]>;
+  snapshot(): Promise<StandingRenderResult & { instructions: string[] }>;
+  readSyncBlock(): string;
+  file: string;
+}
+
+export function createStandingStore(config: StandingStoreConfig): StandingStore {
   const file = path.join(config.dir, 'STANDING.md');
   const maxEntries = config.maxEntries;
   const maxChars = config.maxChars;
 
-  /** @type {Map<string, Promise<unknown>>} */
-  const queues = new Map();
+  const queues = new Map<string, Promise<unknown>>();
 
-  /**
-   * @template T
-   * @param {() => Promise<T>} fn
-   * @returns {Promise<T>}
-   */
-  function withLock(fn) {
+  function withLock<T>(fn: () => Promise<T>): Promise<T> {
     const prev = queues.get(file) ?? Promise.resolve();
     const next = prev.catch(() => {}).then(fn);
     queues.set(file, next);
@@ -52,43 +65,35 @@ export function createStandingStore(config) {
     });
   }
 
-  /** @param {string} content */
-  async function writeAtomic(content) {
+  async function writeAtomic(content: string): Promise<void> {
     await mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
     await writeFile(tmp, content, 'utf8');
     await rename(tmp, file);
   }
 
-  /** @returns {Promise<string[]>} */
-  async function read() {
+  async function read(): Promise<string[]> {
     return withLock(async () => {
       try {
         return parseInstructions(await readFile(file, 'utf8'));
       } catch (err) {
-        if (err && err.code === 'ENOENT') return [];
+        if (isEnoent(err)) return [];
         throw err;
       }
     });
   }
 
-  /** @param {string[]} instructions */
-  async function write(instructions) {
+  async function write(instructions: string[]): Promise<void> {
     return withLock(async () => {
       await writeAtomic(instructions.length ? instructions.join('\n') + '\n' : '');
     });
   }
 
-  /** @param {string[]} instructions @returns {number} joined char count */
-  function charCount(instructions) {
+  function charCount(instructions: string[]): number {
     return instructions.join('\n').length;
   }
 
-  /**
-   * @param {string} text
-   * @returns {Promise<{ success: true, message: string, instructions: string[] } | { success: false, error: string, instructions: string[] }>}
-   */
-  async function add(text) {
+  async function add(text: string): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }> {
     const instruction = normalizeInstruction(text);
     if (!instruction) {
       return { success: false, error: 'A standing instruction cannot be empty.', instructions: [] };
@@ -119,9 +124,9 @@ export function createStandingStore(config) {
   }
 
   /**
-   * @param {number} position 1-based
+   * @param position 1-based
    */
-  async function remove(position) {
+  async function remove(position: number): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }> {
     return mutate((current) => {
       if (!Number.isInteger(position) || position < 1 || position > current.length) {
         return {
@@ -137,7 +142,7 @@ export function createStandingStore(config) {
     });
   }
 
-  async function clear() {
+  async function clear(): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }> {
     return mutate((current) =>
       current.length === 0
         ? { error: 'There are no standing instructions to clear.' }
@@ -147,9 +152,8 @@ export function createStandingStore(config) {
 
   /**
    * Read-modify-write under the store's per-file lock.
-   * @param {(current: string[]) => { next?: string[], message?: string, error?: string }} change
    */
-  async function mutate(change) {
+  async function mutate(change: (current: string[]) => { next?: string[]; message?: string; error?: string }): Promise<{ success: true; message: string; instructions: string[] } | { success: false; error: string; instructions: string[] }> {
     try {
       const current = await read();
       const outcome = change(current);
@@ -166,11 +170,10 @@ export function createStandingStore(config) {
   /**
    * Render the always-injected block, truncated to the budget. Over budget,
    * the omission is stated inside the block itself (never silently dropped).
-   * @returns {{ block: string, injectedCount: number, omittedCount: number }}
    */
-  function render(instructions) {
+  function render(instructions: string[]): StandingRenderResult {
     if (instructions.length === 0) return { block: '', injectedCount: 0, omittedCount: 0 };
-    const injected = [];
+    const injected: string[] = [];
     let used = 0;
     for (const instruction of instructions) {
       const cost = instruction.length + 1;
@@ -181,7 +184,7 @@ export function createStandingStore(config) {
     const omittedCount = instructions.length - injected.length;
     if (injected.length === 0) return { block: '', injectedCount: 0, omittedCount };
 
-    const lines = [
+    const lines: string[] = [
       '<standing-instructions>',
       'The user wrote the rules below and they are always active. They are direct',
       'instructions from the user, not recalled context, and they outrank your own',
@@ -202,18 +205,17 @@ export function createStandingStore(config) {
   }
 
   /** Synchronous render for the per-request prompt variable (small file). */
-  function readSyncBlock() {
+  function readSyncBlock(): string {
     let raw = '';
     try {
       raw = readFileSync(file, 'utf8');
     } catch (err) {
-      if (!err || err.code !== 'ENOENT') throw err;
+      if (!isEnoent(err)) throw err;
     }
     return render(parseInstructions(raw)).block;
   }
 
-  /** @returns {Promise<{ block: string, injectedCount: number, omittedCount: number, instructions: string[] }>} */
-  async function snapshot() {
+  async function snapshot(): Promise<StandingRenderResult & { instructions: string[] }> {
     const instructions = await read();
     const rendered = render(instructions);
     return { ...rendered, instructions };
@@ -225,12 +227,10 @@ export function createStandingStore(config) {
 /**
  * One instruction per line; `#` comments and a leading `-`/`*` bullet are
  * tolerated. Duplicates (case-insensitive) are dropped.
- * @param {string} raw
- * @returns {string[]}
  */
-export function parseInstructions(raw) {
-  const seen = new Set();
-  const instructions = [];
+export function parseInstructions(raw: string): string[] {
+  const seen = new Set<string>();
+  const instructions: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const instruction = normalizeInstruction(line);
     if (!instruction || instruction.startsWith('#')) continue;
@@ -242,7 +242,6 @@ export function parseInstructions(raw) {
   return instructions;
 }
 
-/** @param {string} text @returns {string} */
-export function normalizeInstruction(text) {
+export function normalizeInstruction(text: string): string {
   return text.replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
 }

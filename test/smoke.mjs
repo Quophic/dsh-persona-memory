@@ -3,10 +3,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createMemoryStore, ENTRY_DELIMITER } from '../lib/memory-store.js';
-import { scanContent } from '../lib/secret-scanner.js';
-import { withUsage } from '../lib/memory-tool.js';
-import { parseFacts } from '../lib/learning.js';
+import { createMemoryStore, ENTRY_DELIMITER } from '../dist/lib/memory-store.js';
+import { scanContent } from '../dist/lib/secret-scanner.js';
+import { withUsage } from '../dist/lib/memory-tool.js';
+import { parseFacts } from '../dist/lib/learning.js';
 
 const srcDir = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-memory-smoke-'));
@@ -115,7 +115,7 @@ check('facts parse skips noise', facts.length === 3, JSON.stringify(facts));
 check('facts keep order and strip bullets', facts[0] === 'The user prefers Chinese responses' && facts[1] === 'project uses pnpm workspaces');
 
 // 8. standing instructions (hermes-compatible format)
-import { createStandingStore, parseInstructions, normalizeInstruction } from '../lib/standing.js';
+import { createStandingStore, parseInstructions, normalizeInstruction } from '../dist/lib/standing.js';
 check('standing normalizes bullets and spaces', normalizeInstruction('-  keep   it short  ') === 'keep it short');
 const parsed = parseInstructions('# comment\n- rule one\n* rule two\nrule one\n\nrule three\n');
 check('standing parse tolerates comments/bullets/dedupes', parsed.length === 3, JSON.stringify(parsed));
@@ -159,7 +159,7 @@ const reloaded = createStandingStore({ dir: testDir, maxEntries: 20, maxChars: 2
 check('standing file round-trip via hermes-style lines', (await reloaded.snapshot()).instructions.length === 2);
 
 // 10. auto-consolidation (parse + safety gate)
-import { parseConsolidatedOutput, validateConsolidation, buildConsolidationPrompt } from '../lib/consolidate.js';
+import { parseConsolidatedOutput, validateConsolidation, buildConsolidationPrompt } from '../dist/lib/consolidate.js';
 const goodReply = [
   '```json',
   '{"entries": ["merged fact <!-- created=2026-08-01, last=2026-08-13 -->", "kept fact <!-- created=2026-08-02, last=2026-08-13 -->"]}',
@@ -183,7 +183,7 @@ check('consolidate rejects null output', v4.ok === false);
 check('consolidate prompt mentions limit and stale days', /Character limit: 5000/.test(buildConsolidationPrompt(['x <!-- created=2026-01-01, last=2026-01-01 -->'], 5000, 30)));
 
 // 11. failure memory (failures.md)
-import { buildFailureText, renderRecentFailures } from '../lib/failures.js';
+import { buildFailureText, renderRecentFailures } from '../dist/lib/failures.js';
 check('failure text builds structured line', buildFailureText('deployed to prod', { category: 'correction', failureReason: 'forgot to run tests', correctedTo: 'run tests first' }) === '[correction] deployed to prod — Failed: forgot to run tests — Corrected to: run tests first');
 check('failure text defaults unknown category to failure', buildFailureText('x', { category: 'bogus' }) === '[failure] x');
 const f1 = await store.add('failure', buildFailureText('build failed', { failureReason: 'missing import' }), { dedupe: true });
@@ -208,7 +208,7 @@ fs.writeFileSync(path.join(testDir, 'failures.md'), '');
 check('recent failures empty when no entries', renderRecentFailures(store, { failureMaxAgeDays: 7, failureMaxEntries: 5 }) === '');
 
 // 12. project memory (projects.js)
-import { detectProject, resolveProjectsRoot, safeProjectName } from '../lib/projects.js';
+import { detectProject, resolveProjectsRoot, safeProjectName } from '../dist/lib/projects.js';
 check('safe project name accepts plain name', safeProjectName('my-repo') === 'my-repo');
 check('safe project name rejects traversal', safeProjectName('../evil') === null && safeProjectName('a/b') === null && safeProjectName('') === null);
 const piHermesHome = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
@@ -234,7 +234,7 @@ const pRead = await pstore.read('memory', 5000);
 check('project store read round-trip', pRead.entryCount === 1 && pRead.content.includes('pnpm'));
 
 // 13. in-chat correction pattern detection (correction.js)
-import { extractCorrectionDirective, isCorrection } from '../lib/correction.js';
+import { extractCorrectionDirective, isCorrection } from '../dist/lib/correction.js';
 check('correction strong pattern triggers', isCorrection("don't do that, use the other way") === true);
 check('correction strong I said triggers', isCorrection('I said use pnpm') === true);
 check('correction weak + directive triggers', isCorrection('no, use pnpm instead') === true);
@@ -249,7 +249,7 @@ check('correction custom pattern override', isCorrection("don't do that", { corr
 check('correction custom pattern matches', isCorrection('never use x again', { correctionStrongPatterns: ['never use x'] }) === true);
 
 // 14. FTS5 memory mirror (fts.js)
-import { createFtsIndex } from '../lib/fts.js';
+import { createFtsIndex } from '../dist/lib/fts.js';
 const fts = createFtsIndex({ dir: testDir, enabled: true });
 await store.add('memory', 'fts-marker godot physics notes');
 await store.add('failure', buildFailureText('fts-marker tool crash', { category: 'tool-quirk' }), { dedupe: true });
@@ -270,7 +270,7 @@ check('substring fallback still finds entries', fallbackHits.length >= 2);
 fts.close(); // release the SQLite handle so the temp dir can be removed
 
 // 15. memory-tool layer: update must target the PROJECT store, not the global one
-import { registerMemoryTool } from '../lib/memory-tool.js';
+import { registerMemoryTool } from '../dist/lib/memory-tool.js';
 let registeredTool;
 const toolCtx = {
   tools: { register: (tool) => { registeredTool = tool; } },
@@ -350,14 +350,14 @@ check('failure dedupe allows distinct projects', sf1.added && sf2.added && sf3.a
 check('failure entries carry project64 metadata', fs.readFileSync(path.join(testDir, 'scope', 'failures.md'), 'utf8').includes('project64='));
 
 // 20. prompt injection uses the <memory-context> fence (hermes fenceBlock)
-import { renderMemoryBlock } from '../lib/prompt.js';
+import { renderMemoryBlock } from '../dist/lib/prompt.js';
 const fenced = renderMemoryBlock(store, { memoryCharLimit: 5000, userCharLimit: 5000 });
 check('memory block is fenced against injection', fenced.startsWith('<memory-context>') && fenced.endsWith('</memory-context>') && fenced.includes('NOT new user input'));
 check('empty store renders the empty hint unfenced', renderMemoryBlock(createMemoryStore({ dir: path.join(testDir, 'empty') }), { memoryCharLimit: 5000, userCharLimit: 5000 }).startsWith('_empty'));
 
 // 21. vector index: fingerprint-incremental sync + cosine retrieval + RRF fusion
-import { createVectorIndex } from '../lib/vector-index.js';
-import { fuseRanks } from '../lib/memory-search-tool.js';
+import { createVectorIndex } from '../dist/lib/vector-index.js';
+import { fuseRanks } from '../dist/lib/memory-search-tool.js';
 // Deterministic fake embeddings: char-bigram bag vector, so "godot/physics"
 // style overlap drives cosine similarity without any real model.
 function fakeEmbed(texts) {
@@ -416,7 +416,7 @@ check('vector index disabled reports unavailable', (await disabledVec.available(
 vindex.close();
 
 // 22. memory_search tool: hybrid engine path with mocked vector index
-import { registerMemorySearchTool } from '../lib/memory-search-tool.js';
+import { registerMemorySearchTool } from '../dist/lib/memory-search-tool.js';
 let registeredSearchTool;
 const searchCtx = {
   tools: { register: (tool) => { registeredSearchTool = tool; } },

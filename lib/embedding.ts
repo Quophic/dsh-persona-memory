@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Embedding providers for vector memory search.
  *
@@ -20,11 +19,28 @@
 import os from 'node:os';
 import path from 'node:path';
 
-/**
- * @param {{ vectorEnabled?: boolean, embeddingProvider?: string, embeddingBaseUrl?: string, embeddingApiKey?: string, embeddingModel?: string, embeddingCacheDir?: string, embeddingRemoteHost?: string, logger?: { info?: (...args: any[]) => void, warn?: (...args: any[]) => void } }} cfg
- * @returns {{ kind: 'remote' | 'local', embed: (texts: string[]) => Promise<number[][]> } | null}
- */
-export function createEmbeddingProvider(cfg) {
+export interface EmbeddingProvider {
+  kind: 'remote' | 'local';
+  embed(texts: string[]): Promise<number[][]>;
+}
+
+export interface EmbeddingLogger {
+  info?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+}
+
+export interface EmbeddingProviderConfig {
+  vectorEnabled?: boolean;
+  embeddingProvider?: string;
+  embeddingBaseUrl?: string;
+  embeddingApiKey?: string;
+  embeddingModel?: string;
+  embeddingCacheDir?: string;
+  embeddingRemoteHost?: string;
+  logger?: EmbeddingLogger;
+}
+
+export function createEmbeddingProvider(cfg: EmbeddingProviderConfig): EmbeddingProvider | null {
   if (!cfg.vectorEnabled) return null;
   if (cfg.embeddingProvider === 'local') return createLocalProvider(cfg);
   return createRemoteProvider(cfg);
@@ -32,9 +48,8 @@ export function createEmbeddingProvider(cfg) {
 
 /**
  * OpenAI-compatible remote embeddings (POST {baseUrl}/embeddings).
- * @param {{ embeddingBaseUrl?: string, embeddingApiKey?: string, embeddingModel?: string }} cfg
  */
-function createRemoteProvider(cfg) {
+function createRemoteProvider(cfg: EmbeddingProviderConfig): EmbeddingProvider {
   const baseUrl = (cfg.embeddingBaseUrl ?? '').trim().replace(/\/+$/, '');
   const apiKey = cfg.embeddingApiKey ?? process.env.DSH_EMBEDDING_API_KEY ?? '';
   const model = cfg.embeddingModel ?? 'text-embedding-3-small';
@@ -56,7 +71,7 @@ function createRemoteProvider(cfg) {
         const detail = (await res.text()).slice(0, 200);
         throw new Error(`vector search: embedding API ${res.status} ${detail}`);
       }
-      const data = await res.json();
+      const data = (await res.json()) as { data?: Array<{ index?: number; embedding: number[] }> };
       if (!Array.isArray(data?.data)) {
         throw new Error('vector search: embedding API returned no data array');
       }
@@ -79,24 +94,24 @@ function createRemoteProvider(cfg) {
  * `cfg.logger`; a slow/blocked network surfaces a clear error naming the
  * cache dir and the mirror option (`embeddingRemoteHost`, e.g.
  * `https://hf-mirror.com` for mainland China).
- * @param {{ embeddingModel?: string, embeddingCacheDir?: string, embeddingRemoteHost?: string, logger?: { info?: (...args: any[]) => void, warn?: (...args: any[]) => void } }} cfg
  */
-function createLocalProvider(cfg) {
+function createLocalProvider(cfg: EmbeddingProviderConfig): EmbeddingProvider {
   const model = cfg.embeddingModel ?? 'Xenova/all-MiniLM-L6-v2';
   const cacheDir = cfg.embeddingCacheDir ?? path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), 'models');
   const remoteHost = cfg.embeddingRemoteHost ?? 'https://huggingface.co';
-  const log = cfg.logger ?? { info() {}, warn() {} };
+  const log: EmbeddingLogger = cfg.logger ?? { info() {}, warn() {} };
 
-  /** @type {Promise<{ embed: (texts: string[]) => Promise<number[][]> }> | null} */
-  let ready = null;
+  let ready: Promise<{ embed: (texts: string[]) => Promise<number[][]> }> | null = null;
 
-  async function load() {
-    let mod;
+  async function load(): Promise<{ embed: (texts: string[]) => Promise<number[][]> }> {
+    let mod: any;
     try {
       mod = await import('@xenova/transformers');
     } catch {
       try {
-        mod = await import('@huggingface/transformers');
+        // @huggingface/transformers is an optional fallback package; the
+        // non-literal specifier keeps TS from resolving an uninstalled module.
+        mod = await import('@huggingface/transformers' as string);
       } catch {
         throw new Error(
           'vector search: local provider needs @xenova/transformers or @huggingface/transformers installed. '
@@ -118,7 +133,7 @@ function createLocalProvider(cfg) {
     let lastPct = -1;
     const extractor = await pipeline('feature-extraction', model, {
       quantized: true,
-      progress_callback: (progress) => {
+      progress_callback: (progress: any) => {
         // Throttle: only log on whole 10% boundaries (and file-level events).
         if (progress?.status === 'progress' && typeof progress?.progress === 'number') {
           const pct = Math.round(progress.progress * 100);
@@ -142,7 +157,7 @@ function createLocalProvider(cfg) {
         }
         const batch = dims[0];
         const dim = dims[1];
-        const rows = [];
+        const rows: number[][] = [];
         for (let i = 0; i < batch; i++) {
           rows.push(Array.from(data.subarray(i * dim, (i + 1) * dim)));
         }

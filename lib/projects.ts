@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Project memory — ported in spirit from pi-hermes-memory's project.ts.
  *
@@ -17,21 +16,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/** @type {Map<string, string | null>} */
-const repoRootCache = new Map();
+const repoRootCache = new Map<string, string | null>();
 
 /**
  * Resolve the repository root shared by every linked worktree of `dir`'s repo
  * (mirrors `git rev-parse --git-common-dir` without spawning git). Null
  * outside a repository.
- * @param {string} dir
- * @returns {string | null}
  */
-export function findGitRepoRoot(dir) {
+export function findGitRepoRoot(dir: string): string | null {
   let current = path.resolve(dir);
   while (true) {
     const dotGit = path.join(current, '.git');
-    let stat;
+    let stat: fs.Stats | undefined;
     try {
       stat = fs.statSync(dotGit);
     } catch {
@@ -49,13 +45,8 @@ export function findGitRepoRoot(dir) {
   }
 }
 
-/**
- * @param {string} worktreeRoot
- * @param {string} dotGitFile
- * @returns {string | null}
- */
-function resolveWorktreeCommonDir(worktreeRoot, dotGitFile) {
-  let pointer;
+function resolveWorktreeCommonDir(worktreeRoot: string, dotGitFile: string): string | null {
+  let pointer: string;
   try {
     pointer = fs.readFileSync(dotGitFile, 'utf-8');
   } catch {
@@ -76,10 +67,8 @@ function resolveWorktreeCommonDir(worktreeRoot, dotGitFile) {
 
 /**
  * Pi-compatible projects root.
- * @param {string} memoryDir
- * @returns {string}
  */
-export function resolveProjectsRoot(memoryDir) {
+export function resolveProjectsRoot(memoryDir: string): string {
   const home = os.homedir();
   const piHermesDir = path.join(home, '.pi', 'agent', 'pi-hermes-memory');
   if (path.resolve(memoryDir) === path.resolve(piHermesDir)) {
@@ -90,11 +79,8 @@ export function resolveProjectsRoot(memoryDir) {
 
 /**
  * Detect the project for a working directory.
- * @param {string} cwd
- * @param {string} projectsRoot
- * @returns {{ name: string | null, memoryDir: string | null }}
  */
-export function detectProject(cwd, projectsRoot) {
+export function detectProject(cwd: string, projectsRoot: string): { name: string | null; memoryDir: string | null } {
   const resolved = path.resolve(cwd);
   const resolvedHome = path.resolve(os.homedir());
   if (resolved === resolvedHome || resolved === path.parse(resolved).root) {
@@ -108,14 +94,7 @@ export function detectProject(cwd, projectsRoot) {
   return { name, memoryDir: path.join(projectsRoot, name) };
 }
 
-/**
- * @param {string} resolved
- * @param {string} resolvedHome
- * @param {string} cwdName
- * @param {string} projectsRoot
- * @returns {string}
- */
-function resolveProjectName(resolved, resolvedHome, cwdName, projectsRoot) {
+function resolveProjectName(resolved: string, resolvedHome: string, cwdName: string, projectsRoot: string): string {
   let repoRoot = repoRootCache.get(resolved);
   if (repoRoot === undefined) {
     repoRoot = findGitRepoRoot(resolved);
@@ -133,10 +112,9 @@ function resolveProjectName(resolved, resolvedHome, cwdName, projectsRoot) {
 
 /**
  * Validate a model-supplied project name for the tools (path traversal guard).
- * @param {unknown} name
- * @returns {string | null} sanitized name, or null when unsafe
+ * @returns sanitized name, or null when unsafe
  */
-export function safeProjectName(name) {
+export function safeProjectName(name: unknown): string | null {
   if (typeof name !== 'string') return null;
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > 80) return null;

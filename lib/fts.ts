@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * FTS5 memory mirror — the "Memory Search Sync / Extended Store" counterpart
  * of pi-hermes-memory: memory entries are mirrored into a SQLite FTS5 index
@@ -16,22 +15,34 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { decodeEntry, ENTRY_DELIMITER } from './memory-store.js';
+import { decodeEntry, type MemoryKind, type MemoryStore } from './memory-store.js';
 
-const WHICHES = ['memory', 'user', 'failure'];
+const WHICHES: MemoryKind[] = ['memory', 'user', 'failure'];
 
-/**
- * @param {{ dir: string, enabled: boolean }} config
- */
-export function createFtsIndex(config) {
+export interface FtsSearchHit {
+  which: string;
+  created: string;
+  text: string;
+}
+
+export interface FtsIndex {
+  search(store: MemoryStore, query: string, which: MemoryKind | 'all', limit: number): Promise<FtsSearchHit[] | null>;
+  available(): Promise<boolean>;
+  close(): void;
+}
+
+export interface FtsIndexConfig {
+  dir: string;
+  enabled: boolean;
+}
+
+export function createFtsIndex(config: FtsIndexConfig): FtsIndex {
   const dbPath = path.join(config.dir, '.memory-index.sqlite');
-  /** @type {import('node:sqlite').DatabaseSync | null} */
-  let db = null;
-  /** @type {Record<string, number>} file mtimes at last build */
-  let builtMtimes = {};
+  let db: import('node:sqlite').DatabaseSync | null = null;
+  /** file mtimes at last build */
+  let builtMtimes: Record<string, number> = {};
 
-  /** @returns {Promise<import('node:sqlite').DatabaseSync | null>} */
-  async function open() {
+  async function open(): Promise<import('node:sqlite').DatabaseSync | null> {
     if (!config.enabled) return null;
     if (db) return db;
     try {
@@ -47,14 +58,11 @@ export function createFtsIndex(config) {
     }
   }
 
-  /**
-   * @param {ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
-   * @returns {Promise<boolean>} true when the index is fresh
-   */
-  async function ensureBuilt(store) {
+  /** @returns true when the index is fresh */
+  async function ensureBuilt(store: MemoryStore): Promise<boolean> {
     const handle = await open();
     if (!handle) return false;
-    const mtimes = {};
+    const mtimes: Record<string, number> = {};
     for (const which of WHICHES) {
       const file = store.fileFor(which);
       try {
@@ -64,7 +72,7 @@ export function createFtsIndex(config) {
       }
     }
     const stale = Object.keys(mtimes).some((file) => mtimes[file] !== builtMtimes[file]);
-    if (!stale && builtMtimes !== undefined && Object.keys(builtMtimes).length > 0) return true;
+    if (!stale && Object.keys(builtMtimes).length > 0) return true;
     try {
       handle.exec('DELETE FROM memory_fts');
       const insert = handle.prepare('INSERT INTO memory_fts (which, created, text) VALUES (?, ?, ?)');
@@ -85,13 +93,8 @@ export function createFtsIndex(config) {
   /**
    * Search the FTS mirror. Returns null when the index is unavailable —
    * callers fall back to the substring scan.
-   * @param {ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
-   * @param {string} query
-   * @param {'memory' | 'user' | 'failure' | 'all'} which
-   * @param {number} limit
-   * @returns {Promise<{ which: string, created: string, text: string }[] | null>}
    */
-  async function search(store, query, which, limit) {
+  async function search(store: MemoryStore, query: string, which: MemoryKind | 'all', limit: number): Promise<FtsSearchHit[] | null> {
     const fresh = await ensureBuilt(store);
     if (!fresh) return null;
     try {
@@ -99,21 +102,20 @@ export function createFtsIndex(config) {
       // never executable — same contract as dsh-session-query-sqlite).
       const phrase = '"' + query.replace(/"/g, '""') + '"';
       const rows = which === 'all'
-        ? db.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?').all(phrase, limit)
-        : db.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? AND which = ? ORDER BY rank LIMIT ?').all(phrase, which, limit);
-      return rows.map((r) => ({ which: String(r.which), created: String(r.created), text: String(r.text) }));
+        ? db!.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?').all(phrase, limit)
+        : db!.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? AND which = ? ORDER BY rank LIMIT ?').all(phrase, which, limit);
+      return (rows as Array<Record<string, unknown>>).map((r) => ({ which: String(r.which), created: String(r.created), text: String(r.text) }));
     } catch (err) {
       return null;
     }
   }
 
-  /** @returns {Promise<boolean>} */
-  async function available() {
+  async function available(): Promise<boolean> {
     return (await open()) !== null;
   }
 
   /** Close the index (releases the SQLite handle / file locks). */
-  function close() {
+  function close(): void {
     try {
       db?.close();
     } catch {

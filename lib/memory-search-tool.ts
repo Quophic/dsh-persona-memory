@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The `memory_search` tool: search across the persistent persona memory
  * (MEMORY.md, USER.md, failures.md, and per-project stores).
@@ -12,23 +11,29 @@
  * All paths are bounded by `searchMaxResults` and return the same shape, so
  * injection cost is identical regardless of engine.
  */
-import { defineTool } from '@deepseek-ai/dsh-tools';
+import { defineTool, type JsonValue } from '@deepseek-ai/dsh-tools';
 import { safeProjectName } from './projects.js';
+import type { MemoryKind, MemoryStore } from './memory-store.js';
+import type { FtsIndex } from './fts.js';
+import type { VectorIndex } from './vector-index.js';
+import type { Context } from '@deepseek-ai/cordis';
+
+export interface SearchHit {
+  which: string;
+  created: string;
+  text: string;
+}
 
 /**
  * Fuse two ranked hit lists by Reciprocal Rank Fusion. Both lists share the
  * { which, created, text } shape; entries present in both are boosted by the
  * sum of their reciprocal ranks, so exact FTS5 matches and semantic near-
  * matches complement each other instead of competing.
- * @param {{ which: string, created: string, text: string }[]} ftsHits
- * @param {{ which: string, created: string, text: string }[]} vecHits
- * @param {number} limit
- * @param {number} [k] RRF constant (default 60, standard choice)
+ * @param k RRF constant (default 60, standard choice)
  */
-export function fuseRanks(ftsHits, vecHits, limit, k = 60) {
-  /** @type {Map<string, { which: string, created: string, text: string, score: number }>} */
-  const fused = new Map();
-  const bump = (hits) => {
+export function fuseRanks(ftsHits: SearchHit[], vecHits: SearchHit[], limit: number, k = 60): SearchHit[] {
+  const fused = new Map<string, { which: string; created: string; text: string; score: number }>();
+  const bump = (hits: SearchHit[]) => {
     hits.forEach((h, index) => {
       const key = `${h.which}\u0000${h.text}`;
       const existing = fused.get(key);
@@ -49,13 +54,17 @@ export function fuseRanks(ftsHits, vecHits, limit, k = 60) {
 }
 
 /**
- * @param {ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
- * @param {(name: string) => ReturnType<typeof import('./memory-store.js').createMemoryStore>} getProjectStore
- * @param {{ searchMaxResults: number }} config
- * @param {ReturnType<typeof import('./fts.js').createFtsIndex>} [fts] FTS5 mirror; falls back to substring scan when unavailable
- * @param {ReturnType<typeof import('./vector-index.js').createVectorIndex>} [vector] semantic mirror; hybrid-fused with FTS5 when available
+ * @param fts FTS5 mirror; falls back to substring scan when unavailable
+ * @param vector semantic mirror; hybrid-fused with FTS5 when available
  */
-export function registerMemorySearchTool(ctx, store, config, getProjectStore, fts, vector) {
+export function registerMemorySearchTool(
+  ctx: Context,
+  store: MemoryStore,
+  config: { searchMaxResults: number },
+  getProjectStore: (name: string) => MemoryStore,
+  fts?: FtsIndex,
+  vector?: VectorIndex,
+): void {
   ctx.tools.register(
     defineTool({
       name: 'memory_search',
@@ -89,18 +98,20 @@ export function registerMemorySearchTool(ctx, store, config, getProjectStore, ft
       async execute(args) {
         const query = (args.query ?? '').trim();
         if (!query) {
-          return { query, matchCount: 0, matches: [] };
+          return { query, matchCount: 0, matches: [] } as unknown as Record<string, JsonValue>;
         }
-        const projectName =
-          args.project !== undefined && args.project !== null && String(args.project).trim() !== ''
-            ? safeProjectName(args.project)
-            : undefined;
+        const projectName = (args.project !== undefined && args.project !== null && String(args.project).trim() !== ''
+          ? safeProjectName(args.project)
+          : undefined) ?? undefined;
         if (projectName) {
-          const hits = await getProjectStore(projectName).search('memory', query, config.searchMaxResults);
+          // NOTE: store.search(query, which, max) — the original JS passed
+          // ('memory', query, max), swapping query/which and silently searching
+          // the literal "memory" in the user's query as the which-filter.
+          const hits = await getProjectStore(projectName).search(query, 'memory', config.searchMaxResults);
           const matches = hits.map((h) => ({ ...h, which: `project:${projectName}` }));
-          return { query, matchCount: matches.length, matches };
+          return { query, matchCount: matches.length, matches } as unknown as Record<string, JsonValue>;
         }
-        const which = args.which ?? 'all';
+        const which = (args.which ?? 'all') as MemoryKind | 'all';
         // Fetch both engines with a little headroom so fusion can re-rank.
         const limit = config.searchMaxResults;
         const ftsPromise = fts ? fts.search(store, query, which, limit * 3) : Promise.resolve(null);
@@ -111,28 +122,27 @@ export function registerMemorySearchTool(ctx, store, config, getProjectStore, ft
         if (vecRanked && vecRanked.length > 0) {
           const matches = fuseRanks(ftsRanked ?? [], vecRanked, limit);
           if (matches.length > 0) {
-            return { query, matchCount: matches.length, matches, engine: 'hybrid' };
+            return { query, matchCount: matches.length, matches, engine: 'hybrid' } as unknown as Record<string, JsonValue>;
           }
         }
         // 2. FTS5 only (or vector had nothing while FTS5 did).
         if (ftsRanked && ftsRanked.length > 0) {
-          return { query, matchCount: ftsRanked.length, matches: ftsRanked.slice(0, limit), engine: 'fts' };
+          return { query, matchCount: ftsRanked.length, matches: ftsRanked.slice(0, limit), engine: 'fts' } as unknown as Record<string, JsonValue>;
         }
         // 3. Substring fallback.
         const matches = await store.search(query, which, limit);
-        return { query, matchCount: matches.length, matches, engine: 'substring' };
+        return { query, matchCount: matches.length, matches, engine: 'substring' } as unknown as Record<string, JsonValue>;
       },
     }),
   );
 }
 
-/** @param {unknown} value @returns {string} */
-function formatResult(value) {
-  const v = /** @type {Record<string, any>} */ (value);
-  if (!v.matches || v.matches.length === 0) {
-    return `No memory entries match "${v.query}".`;
+function formatResult(value: unknown): string {
+  const v = value as Record<string, unknown>;
+  if (!v.matches || (v.matches as unknown[]).length === 0) {
+    return `No memory entries match "${String(v.query)}".`;
   }
-  const engine = v.engine ? ` [${v.engine}]` : '';
-  const lines = v.matches.map((m) => `- [${m.which}/${m.created}] ${m.text}`);
-  return `Found ${v.matchCount} matching entr${v.matchCount === 1 ? 'y' : 'ies'} for "${v.query}"${engine}:\n${lines.join('\n')}`;
+  const engine = v.engine ? ` [${String(v.engine)}]` : '';
+  const lines = (v.matches as Array<Record<string, unknown>>).map((m) => `- [${String(m.which)}/${String(m.created)}] ${String(m.text)}`);
+  return `Found ${v.matchCount} matching entr${v.matchCount === 1 ? 'y' : 'ies'} for "${String(v.query)}"${engine}:\n${lines.join('\n')}`;
 }

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Memory store — durable half of dsh-persona-memory.
  *
@@ -25,6 +24,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+/** Narrow `unknown` catch values to their errno code (Node errno guard). */
+export function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
+}
+
 /** Same delimiter as pi-hermes-memory (src/constants.ts). */
 export const ENTRY_DELIMITER = '\n§\n';
 
@@ -32,19 +36,93 @@ export const ENTRY_DELIMITER = '\n§\n';
 export const DEFAULT_MEMORY_CHAR_LIMIT = 5000;
 export const DEFAULT_USER_CHAR_LIMIT = 5000;
 
-/** @returns {string} today as YYYY-MM-DD (hermes date format) */
-function today() {
+export type MemoryKind = 'memory' | 'user' | 'failure';
+
+export interface DecodedEntry {
+  text: string;
+  created: string;
+  lastReferenced: string;
+  project: string | null;
+}
+
+export interface StoreAddResult {
+  which: MemoryKind;
+  file: string;
+  added: boolean;
+  duplicate?: boolean;
+  overflow?: boolean;
+  limit?: number;
+  entryCount: number;
+  charCount: number;
+}
+
+export interface StoreUpdateResult {
+  which: MemoryKind;
+  file: string;
+  updated: boolean;
+  overflow?: boolean;
+  limit?: number;
+  entryCount: number;
+  charCount: number;
+}
+
+export interface StoreRemoveResult {
+  which: MemoryKind;
+  file: string;
+  deleted: boolean;
+  entryCount: number;
+  charCount: number;
+}
+
+export interface StoreRewriteResult {
+  which: MemoryKind;
+  file: string;
+  rewritten: boolean;
+  overflow?: boolean;
+  limit?: number;
+  entryCount: number;
+  charCount: number;
+}
+
+export interface StoreReadResult {
+  which: MemoryKind;
+  file: string;
+  exists: boolean;
+  charCount: number;
+  entryCount: number;
+  content: string;
+}
+
+export interface StoreSearchHit {
+  which: MemoryKind;
+  created: string;
+  text: string;
+}
+
+export interface MemoryStore {
+  add(which: MemoryKind, content: string, opts?: { dedupe?: boolean; project?: string | null }): Promise<StoreAddResult & { conflict?: boolean }>;
+  update(which: MemoryKind, match: string, content: string): Promise<StoreUpdateResult & { conflict?: boolean }>;
+  remove(which: MemoryKind, match: string): Promise<StoreRemoveResult & { conflict?: boolean }>;
+  rewrite(which: MemoryKind, content: string): Promise<StoreRewriteResult>;
+  read(which: MemoryKind, limit: number): Promise<StoreReadResult>;
+  readSync(which: MemoryKind, limit: number): StoreReadResult;
+  readRawSync(which: MemoryKind): string[];
+  search(query: string, which: MemoryKind | 'all', maxResults: number): Promise<StoreSearchHit[]>;
+  stat(which: MemoryKind): Promise<{ exists: boolean; entryCount: number }>;
+  fileFor(which: MemoryKind): string;
+  listRaw(which: MemoryKind): Promise<string[]>;
+  replaceEntries(which: MemoryKind, entries: string[]): Promise<{ which: string; entryCount: number; charCount: number }>;
+}
+
+/** @returns today as YYYY-MM-DD (hermes date format) */
+function today(): string {
   return new Date().toISOString().split('T')[0];
 }
 
 /**
  * Encode one entry line (hermes MemoryStore.encodeEntry).
- * @param {string} text
- * @param {string} created
- * @param {string} lastReferenced
- * @param {string | null} [project]
  */
-function encodeEntry(text, created, lastReferenced, project) {
+function encodeEntry(text: string, created: string, lastReferenced: string, project?: string | null): string {
   const projectMetadata = project?.trim()
     ? `, project64=${Buffer.from(project.trim(), 'utf-8').toString('base64url')}`
     : '';
@@ -53,13 +131,11 @@ function encodeEntry(text, created, lastReferenced, project) {
 
 /**
  * Decode one raw entry line (hermes MemoryStore.decodeEntry).
- * @param {string} raw
- * @returns {{ text: string, created: string, lastReferenced: string, project: string | null }}
  */
-export function decodeEntry(raw) {
+export function decodeEntry(raw: string): DecodedEntry {
   const match = /^(.*?)\s*<!--\s*created=([^,]+),\s*last=([^,>]+)(?:,\s*project64=([A-Za-z0-9_-]+))?\s*-->\s*$/.exec(raw);
   if (match) {
-    let project = null;
+    let project: string | null = null;
     if (match[4]) {
       try {
         project = Buffer.from(match[4], 'base64url').toString('utf-8').trim() || null;
@@ -73,45 +149,40 @@ export function decodeEntry(raw) {
   return { text: raw.trim(), created: t, lastReferenced: t, project: null };
 }
 
-/** @param {string} raw @returns {string[]} raw entry lines */
-/** @param {string} raw @returns {string[]} raw entry lines (hermes split) */
-export function parseEntries(raw) {
+/** Split raw file content into raw entry lines (hermes split). */
+export function parseEntries(raw: string): string[] {
   return raw.split(ENTRY_DELIMITER).map((e) => e.trim()).filter(Boolean);
 }
 
-/** @param {string} text */
-function normalizeContent(text) {
+function normalizeContent(text: string): string {
   // Aligned with pi-hermes-memory: only trim, never collapse embedded
   // newlines (hermes MemoryStore.add trims; line-anchored decodeEntry
   // handles multi-line entries via its legacy fallback on both sides).
   return text.trim();
 }
 
-/**
- * @param {{ dir: string, limits?: { memory?: number, user?: number, failure?: number } }} config
- */
-export function createMemoryStore(config) {
+export interface MemoryStoreConfig {
+  dir: string;
+  limits?: { memory?: number; user?: number; failure?: number };
+}
+
+export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
   const dir = config.dir;
   const limits = config.limits ?? {};
 
-  /** @param {'memory' | 'user' | 'failure'} which */
-  function charLimitFor(which) {
+  function charLimitFor(which: MemoryKind): number {
     if (which === 'user') return limits.user ?? DEFAULT_USER_CHAR_LIMIT;
     if (which === 'failure') return limits.failure ?? DEFAULT_MEMORY_CHAR_LIMIT * 2; // hermes: failures get more space
     return limits.memory ?? DEFAULT_MEMORY_CHAR_LIMIT;
   }
 
-  /** @type {Map<string, Promise<unknown>>} per-file write chains */
-  const queues = new Map();
+  /** per-file write chains */
+  const queues = new Map<string, Promise<unknown>>();
 
   /**
    * Serialize mutations per file; read-modify-write cycles never interleave.
-   * @template T
-   * @param {string} file
-   * @param {() => Promise<T>} fn
-   * @returns {Promise<T>}
    */
-  function withLock(file, fn) {
+  function withLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
     const prev = queues.get(file) ?? Promise.resolve();
     const next = prev.catch(() => {}).then(fn);
     queues.set(file, next);
@@ -120,8 +191,7 @@ export function createMemoryStore(config) {
     });
   }
 
-  /** @param {string} file @param {string} content */
-  async function writeAtomic(file, content) {
+  async function writeAtomic(file: string, content: string): Promise<void> {
     await mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
     await writeFile(tmp, content, 'utf8');
@@ -130,29 +200,26 @@ export function createMemoryStore(config) {
 
   /**
    * Read a file's raw text, or null when absent. Empty files read as ''.
-   * @param {string} file
-   * @returns {Promise<string | null>}
    */
-  async function readRaw(file) {
+  async function readRaw(file: string): Promise<string | null> {
     try {
       return await readFile(file, 'utf8');
     } catch (err) {
-      if (err && err.code === 'ENOENT') return null;
+      if (isEnoent(err)) return null;
       throw err;
     }
   }
 
-  /** @param {string | null} raw @returns {string} stable fingerprint ('' for absent) */
-  function fingerprint(raw) {
+  /** stable fingerprint ('' for absent) */
+  function fingerprint(raw: string | null): string {
     return createHash('sha256').update(raw ?? '').digest('hex');
   }
 
   /**
    * Serialize entries exactly like pi-hermes-memory: entries joined by the
    * delimiter, NO trailing newline (byte-compatible with Pi's saveToDisk).
-   * @param {string[]} entries
    */
-  function serialize(entries) {
+  function serialize(entries: string[]): string {
     return entries.length ? entries.join(ENTRY_DELIMITER) : '';
   }
 
@@ -160,11 +227,9 @@ export function createMemoryStore(config) {
    * Re-read a file and compare its fingerprint with a previously captured one.
    * Detects an external (Pi / editor) write that landed between our read and
    * our write — the "phantom success" guard from hermes's ExternalMemoryWriteConflict.
-   * @param {string} file
-   * @param {string} expected
-   * @returns {Promise<boolean>} true when the file still matches
+   * @returns true when the file still matches
    */
-  async function unchangedSince(file, expected) {
+  async function unchangedSince(file: string, expected: string): Promise<boolean> {
     try {
       return fingerprint(await readRaw(file)) === expected;
     } catch {
@@ -172,20 +237,19 @@ export function createMemoryStore(config) {
     }
   }
 
-  /** @param {'memory' | 'user' | 'failure'} which */
-  function fileFor(which) {
+  function fileFor(which: MemoryKind): string {
     if (which === 'user') return path.join(dir, 'USER.md');
     if (which === 'failure') return path.join(dir, 'failures.md'); // hermes naming
     return path.join(dir, 'MEMORY.md');
   }
 
-  /** @param {string} file @returns {Promise<string[]>} parsed raw entry lines */
-  async function readEntries(file) {
+  /** @returns parsed raw entry lines */
+  async function readEntries(file: string): Promise<string[]> {
     return withLock(file, async () => {
       try {
         return parseEntries(await readFile(file, 'utf8'));
       } catch (err) {
-        if (err && err.code === 'ENOENT') return [];
+        if (isEnoent(err)) return [];
         throw err;
       }
     });
@@ -203,25 +267,24 @@ export function createMemoryStore(config) {
    * written over it — the change runs once more against the fresh state, and
    * if the file is still moving the result is returned with `conflict: true`
    * so callers can surface the collision instead of clobbering Pi's write.
-   * @template T
-   * @param {string} file
-   * @param {(entries: string[]) => ({ next?: string[], value: T })} change
-   * @returns {Promise<T & { conflict?: boolean }>}
    */
-  async function mutate(file, change) {
+  async function mutate<T>(
+    file: string,
+    change: (entries: string[]) => { next?: string[]; value: T },
+  ): Promise<T & { conflict?: boolean }> {
     return withLock(file, async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const before = await readRaw(file);
         const beforeFp = fingerprint(before);
-        let entries = [];
+        let entries: string[] = [];
         if (before) {
           entries = parseEntries(before);
         }
         const { next, value } = change(entries);
-        if (!next) return value;
+        if (!next) return value as T & { conflict?: boolean };
         if (await unchangedSince(file, beforeFp)) {
           await writeAtomic(file, serialize(next));
-          return value;
+          return value as T & { conflict?: boolean };
         }
         // External write landed between read and publish — retry once against
         // the fresh state; if it is still changing, refuse to overwrite.
@@ -230,28 +293,25 @@ export function createMemoryStore(config) {
       const before = await readRaw(file);
       const entries = before ? parseEntries(before) : [];
       const { next, value } = change(entries);
-      if (!next) return value;
+      if (!next) return value as T & { conflict?: boolean };
       return { ...value, conflict: true };
     });
   }
 
   /**
    * Synchronous raw entry read (prompt variables are sync; files are small).
-   * @param {'memory' | 'user' | 'failure'} which
-   * @returns {string[]}
    */
-  function readRawSync(which) {
+  function readRawSync(which: MemoryKind): string[] {
     let raw = '';
     try {
       raw = readFileSync(fileFor(which), 'utf8');
     } catch (err) {
-      if (!err || err.code !== 'ENOENT') throw err;
+      if (!isEnoent(err)) throw err;
     }
     return parseEntries(raw);
   }
 
-  /** @param {string} file @param {string[]} entries */
-  async function writeEntries(file, entries) {
+  async function writeEntries(file: string, entries: string[]): Promise<void> {
     return withLock(file, async () => {
       await writeAtomic(file, serialize(entries));
     });
@@ -259,49 +319,41 @@ export function createMemoryStore(config) {
 
   /**
    * Raw (metadata-kept) entry lines for one store — used by consolidation.
-   * @param {'memory' | 'user'} which
-   * @returns {Promise<string[]>}
    */
-  async function listRaw(which) {
+  async function listRaw(which: MemoryKind): Promise<string[]> {
     return readEntries(fileFor(which));
   }
 
   /**
    * Replace one store with exact raw entry lines (consolidation commit path).
-   * @param {'memory' | 'user'} which
-   * @param {string[]} entries
    */
-  async function replaceEntries(which, entries) {
+  async function replaceEntries(which: MemoryKind, entries: string[]): Promise<{ which: string; entryCount: number; charCount: number }> {
     await writeEntries(fileFor(which), entries);
     return { which, entryCount: entries.length, charCount: charCount(entries) };
   }
 
-  /** @param {string[]} entries @returns {number} joined char count (hermes charCount) */
-  function charCount(entries) {
+  /** joined char count (hermes charCount) */
+  function charCount(entries: string[]): number {
     return entries.length ? entries.join(ENTRY_DELIMITER).length : 0;
   }
 
-  /** @param {string[]} entries @returns {{ text: string, created: string, lastReferenced: string, project: string | null }[]} */
-  function decoded(entries) {
+  function decoded(entries: string[]): DecodedEntry[] {
     return entries.map(decodeEntry);
   }
 
-  /** @param {{ text: string, created: string, lastReferenced: string, project: string | null }[]} list @returns {string[]} */
-  function encoded(list) {
+  function encoded(list: DecodedEntry[]): string[] {
     return list.map((e) => encodeEntry(e.text, e.created, e.lastReferenced, e.project));
   }
 
   /**
-   * @param {'memory' | 'user' | 'failure'} which
-   * @param {string} content
-   * @param {{ dedupe?: boolean, project?: string | null }} [opts] dedupe rejects
-   *   exact-text duplicates (hermes failure behavior: scoped by project);
-   *   `project` tags the entry with project64 metadata (hermes failure scopes).
+   * `dedupe` rejects exact-text duplicates (hermes failure behavior: scoped by
+   * project); `project` tags the entry with project64 metadata (hermes failure
+   * scopes).
    */
-  async function add(which, content, opts = {}) {
+  async function add(which: MemoryKind, content: string, opts: { dedupe?: boolean; project?: string | null } = {}): Promise<StoreAddResult & { conflict?: boolean }> {
     const file = fileFor(which);
     const limit = charLimitFor(which);
-    return mutate(file, (entries) => {
+    return mutate<StoreAddResult>(file, (entries) => {
       const project = opts.project ?? null;
       if (opts.dedupe) {
         const duplicate = decoded(entries).some((e) =>
@@ -323,14 +375,11 @@ export function createMemoryStore(config) {
 
   /**
    * Replace the first entry whose stripped text contains `match`.
-   * @param {'memory' | 'user'} which
-   * @param {string} match
-   * @param {string} content
    */
-  async function update(which, match, content) {
+  async function update(which: MemoryKind, match: string, content: string): Promise<StoreUpdateResult & { conflict?: boolean }> {
     const file = fileFor(which);
     const limit = charLimitFor(which);
-    return mutate(file, (entries) => {
+    return mutate<StoreUpdateResult>(file, (entries) => {
       const list = decoded(entries);
       const index = list.findIndex((e) => e.text.toLowerCase().includes(match.toLowerCase()));
       if (index < 0) {
@@ -348,12 +397,10 @@ export function createMemoryStore(config) {
 
   /**
    * Remove the first entry whose stripped text contains `match`.
-   * @param {'memory' | 'user'} which
-   * @param {string} match
    */
-  async function remove(which, match) {
+  async function remove(which: MemoryKind, match: string): Promise<StoreRemoveResult & { conflict?: boolean }> {
     const file = fileFor(which);
-    return mutate(file, (entries) => {
+    return mutate<StoreRemoveResult>(file, (entries) => {
       const list = decoded(entries);
       const index = list.findIndex((e) => e.text.toLowerCase().includes(match.toLowerCase()));
       if (index < 0) {
@@ -375,18 +422,15 @@ export function createMemoryStore(config) {
    * document branch, or all memory collapses into one unformatted entry
    * (observed: MEMORY.md became one 4.7KB entry with no metadata after a
    * rewrite whose content contained one "§").
-   * @param {'memory' | 'user'} which
-   * @param {string} content
    */
-  async function rewrite(which, content) {
+  async function rewrite(which: MemoryKind, content: string): Promise<StoreRewriteResult> {
     const file = fileFor(which);
     const trimmed = content.trim();
-    const docLike = trimmed.includes(ENTRY_DELIMITER)
+    const entries = trimmed.includes(ENTRY_DELIMITER)
       // "a\n§\nb" — real multi-entry document: at least one separator present.
       // A leading/bare "§" without "\n§\n" stays a single entry.
       ? parseEntries(trimmed)
       : [encodeEntry(normalizeContent(trimmed), today(), today())];
-    const entries = docLike;
     const limit = charLimitFor(which);
     if (charCount(entries) > limit) {
       return { which, file, rewritten: false, overflow: true, limit, entryCount: entries.length, charCount: charCount(entries) };
@@ -395,12 +439,7 @@ export function createMemoryStore(config) {
     return { which, file, rewritten: true, entryCount: entries.length, charCount: charCount(entries) };
   }
 
-  /**
-   * @param {'memory' | 'user'} which
-   * @param {number} limit
-   * @returns {Promise<{ which: string, file: string, exists: boolean, charCount: number, entryCount: number, content: string }>}
-   */
-  async function read(which, limit) {
+  async function read(which: MemoryKind, limit: number): Promise<StoreReadResult> {
     const file = fileFor(which);
     const entries = await readEntries(file);
     const list = decoded(entries);
@@ -417,17 +456,14 @@ export function createMemoryStore(config) {
 
   /**
    * Synchronous read for the per-request prompt variable (small files).
-   * @param {'memory' | 'user'} which
-   * @param {number} limit
-   * @returns {{ which: string, file: string, exists: boolean, charCount: number, entryCount: number, content: string }}
    */
-  function readSync(which, limit) {
+  function readSync(which: MemoryKind, limit: number): StoreReadResult {
     const file = fileFor(which);
     let raw = '';
     try {
       raw = readFileSync(file, 'utf8');
     } catch (err) {
-      if (!err || err.code !== 'ENOENT') throw err;
+      if (!isEnoent(err)) throw err;
     }
     const list = parseEntries(raw).map(decodeEntry);
     const content = list.map((e) => e.text).join('\n\n');
@@ -441,16 +477,10 @@ export function createMemoryStore(config) {
     };
   }
 
-  /**
-   * @param {string} query
-   * @param {'memory' | 'user' | 'failure' | 'all'} which
-   * @param {number} maxResults
-   * @returns {Promise<{ which: string, created: string, text: string }[]>}
-   */
-  async function search(query, which, maxResults) {
-    const wanted = which === 'all' ? ['memory', 'user', 'failure'] : [which];
+  async function search(query: string, which: MemoryKind | 'all', maxResults: number): Promise<StoreSearchHit[]> {
+    const wanted: MemoryKind[] = which === 'all' ? ['memory', 'user', 'failure'] : [which];
     const q = query.toLowerCase();
-    const hits = [];
+    const hits: StoreSearchHit[] = [];
     for (const w of wanted) {
       const list = decoded(await readEntries(fileFor(w)));
       for (const entry of list) {
@@ -463,8 +493,7 @@ export function createMemoryStore(config) {
     return hits;
   }
 
-  /** @param {'memory' | 'user'} which @returns {Promise<{ exists: boolean, entryCount: number }>} */
-  async function stat(which) {
+  async function stat(which: MemoryKind): Promise<{ exists: boolean; entryCount: number }> {
     const entries = await readEntries(fileFor(which));
     return { exists: entries.length > 0, entryCount: entries.length };
   }
@@ -473,11 +502,9 @@ export function createMemoryStore(config) {
 }
 
 /**
- * @param {string} text
- * @param {number} limit
- * @returns {string} text truncated to ~limit chars with a marker
+ * @returns text truncated to ~limit chars with a marker
  */
-export function truncate(text, limit) {
+export function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return text.slice(0, Math.max(0, limit - 40)) + '\n…[truncated — use memory_search for full entries]';
 }

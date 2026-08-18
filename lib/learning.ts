@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Lifecycle hooks — the "auto" half of dsh-persona-memory.
  *
@@ -12,10 +11,22 @@
  *    store. All writes still pass the content scanner.
  */
 import { scanContent } from './secret-scanner.js';
-import { callLlm, latestRoute } from './llm-helper.js';
-import { maybeConsolidate } from './consolidate.js';
+import { callLlm, latestRoute, type LlmRoute } from './llm-helper.js';
+import { maybeConsolidate, type ConsolidationConfig } from './consolidate.js';
 import { buildFailureText } from './failures.js';
 import { extractCorrectionDirective, isCorrection } from './correction.js';
+import type { MemoryStore } from './memory-store.js';
+import type { Context } from '@deepseek-ai/cordis';
+import type { Session } from '@deepseek-ai/dsh-session';
+
+// The `feedback/record` event is contributed by @deepseek-ai/dsh-command-feedback
+// through declaration merging on SessionEventMap; mirror the same merge so this
+// module's `event.data?.text` access type-checks without a runtime dependency.
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    'feedback/record': { text: string };
+  }
+}
 
 const LEARNING_SYSTEM_PROMPT = `You are a memory curator for a coding agent that persists long-term persona memory across sessions.
 
@@ -27,20 +38,35 @@ Rules:
 - Only output NEW facts that are not already in the current memory.
 - If there is nothing worth saving, output the single line: NONE`;
 
-/**
- * @param {import('./memory-store.js').ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
- * @param {{ enableSecretScanning: boolean, correctionDetection: boolean, learnEnabled: boolean, learnIntervalTurns: number, learnRecentTurns: number, learnMaxChars: number, learnTimeoutMs: number }} cfg
- * @param {import('@deepseek-ai/cordis').Context} ctx
- */
-export function registerLifecycleHooks(ctx, store, cfg) {
-  /** @type {Map<string, number>} turn counts per session id */
-  const turnCounts = new Map();
-  /** @type {Set<string>} sessions with a learning call in flight */
-  const inflight = new Set();
-  /** @type {Set<string>} sessions with a pending in-chat correction this turn */
-  const pendingCorrections = new Set();
-  /** @type {Map<string, number>} turns since last correction save, per session */
-  const turnsSinceCorrection = new Map();
+// NOTE: this in-flight guard is intentionally module-scoped — runLearning is a
+// top-level function and must share one registry across every session. (The
+// original JS declared it inside registerLifecycleHooks, which made runLearning
+// throw ReferenceError on its first use and silently disabled background
+// learning; fixed here by hoisting it to module scope.)
+/** sessions with a learning call in flight */
+const inflight = new Set<string>();
+
+export interface LearningConfig extends ConsolidationConfig {
+  enableSecretScanning: boolean;
+  correctionDetection: boolean;
+  correctionPatternDetection: boolean;
+  correctionRateLimitTurns: number;
+  learnEnabled: boolean;
+  learnIntervalTurns: number;
+  learnRecentTurns: number;
+  learnMaxChars: number;
+  learnTimeoutMs: number;
+  memoryCharLimit: number;
+  autoConsolidate: boolean;
+}
+
+export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: LearningConfig): void {
+  /** turn counts per session id */
+  const turnCounts = new Map<string, number>();
+  /** sessions with a pending in-chat correction this turn */
+  const pendingCorrections = new Set<string>();
+  /** turns since last correction save, per session */
+  const turnsSinceCorrection = new Map<string, number>();
 
   ctx.on('session/event', (session, event) => {
     try {
@@ -49,7 +75,7 @@ export function registerLifecycleHooks(ctx, store, cfg) {
         const text = event.data?.text;
         if (typeof text === 'string' && text.trim()) {
           saveCorrection(store, cfg, text).catch((err) =>
-            ctx.logger.warn('[dsh-persona-memory] correction save failed: %s', err?.message ?? String(err)),
+            ctx.logger.warn('[dsh-persona-memory] correction save failed: %s', (err as Error | undefined)?.message ?? String(err)),
           );
         }
         return;
@@ -80,7 +106,7 @@ export function registerLifecycleHooks(ctx, store, cfg) {
             const text = lastDirectUserText(session);
             if (text) {
               saveCorrection(store, cfg, extractCorrectionDirective(text)).catch((err) =>
-                ctx.logger.warn('[dsh-persona-memory] correction save failed: %s', err?.message ?? String(err)),
+                ctx.logger.warn('[dsh-persona-memory] correction save failed: %s', (err as Error | undefined)?.message ?? String(err)),
               );
             }
           } else {
@@ -94,7 +120,7 @@ export function registerLifecycleHooks(ctx, store, cfg) {
           if (n >= cfg.learnIntervalTurns) {
             turnCounts.set(session.id, 0);
             runLearning(ctx, store, cfg, session).catch((err) =>
-              ctx.logger.warn('[dsh-persona-memory] background learning failed: %s', err?.message ?? String(err)),
+              ctx.logger.warn('[dsh-persona-memory] background learning failed: %s', (err as Error | undefined)?.message ?? String(err)),
             );
           } else {
             turnCounts.set(session.id, n);
@@ -103,17 +129,15 @@ export function registerLifecycleHooks(ctx, store, cfg) {
       }
     } catch (err) {
       // containment: a hook bug must never break the session event fan-out
-      ctx.logger.warn('[dsh-persona-memory] session/event hook error: %s', err?.message ?? String(err));
+      ctx.logger.warn('[dsh-persona-memory] session/event hook error: %s', (err as Error | undefined)?.message ?? String(err));
     }
   });
 }
 
 /**
  * Last direct user text from the session surface (for the correction entry).
- * @param {import('@deepseek-ai/dsh-session').Session} session
- * @returns {string}
  */
-function lastDirectUserText(session) {
+function lastDirectUserText(session: Session): string {
   const events = session.events;
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
@@ -128,8 +152,7 @@ function lastDirectUserText(session) {
   return '';
 }
 
-/** @param {ReturnType<import('./memory-store.js').createMemoryStore>} store */
-async function saveCorrection(store, cfg, text) {
+async function saveCorrection(store: MemoryStore, cfg: LearningConfig, text: string): Promise<void> {
   // Corrections are captured as failure memory (category correction) — they
   // surface in the injected recent-failures block so the model learns from
   // them, and stay out of MEMORY.md unless promoted by an explicit add.
@@ -144,11 +167,7 @@ async function saveCorrection(store, cfg, text) {
   console.warn('[dsh-persona-memory] correction save skipped (overflow/conflict): %s', entry.slice(0, 80));
 }
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {ReturnType<import('./memory-store.js').createMemoryStore>} store
- */
-async function runLearning(ctx, store, cfg, session) {
+async function runLearning(ctx: Context, store: MemoryStore, cfg: LearningConfig, session: Session): Promise<void> {
   if (inflight.has(session.id)) return;
   inflight.add(session.id);
   try {
@@ -193,13 +212,10 @@ async function runLearning(ctx, store, cfg, session) {
 }
 
 /**
- * @param {import('@deepseek-ai/dsh-session').Session} session
- * @param {number} recentTurns
- * @param {number} maxChars
- * @returns {string} bounded recent user/assistant transcript
+ * @returns bounded recent user/assistant transcript
  */
-function buildTranscript(session, recentTurns, maxChars) {
-  let messages;
+function buildTranscript(session: Session, recentTurns: number, maxChars: number): string {
+  let messages: ReturnType<Session['deriveMessages']>;
   try {
     messages = session.deriveMessages();
   } catch {
@@ -208,7 +224,7 @@ function buildTranscript(session, recentTurns, maxChars) {
   // tail slice: roughly 3 events per turn window
   const limit = Math.max(1, Math.floor(recentTurns * 3));
   const tail = messages.slice(-limit);
-  const lines = [];
+  const lines: string[] = [];
   for (const msg of tail) {
     if (msg.role !== 'user' && msg.role !== 'assistant') continue;
     const text = msg.content
@@ -226,11 +242,9 @@ function buildTranscript(session, recentTurns, maxChars) {
 
 /**
  * Parse the curator reply into plain facts (exported for testing).
- * @param {unknown} reply
- * @returns {string[]}
  */
-export function parseFacts(reply) {
-  const facts = [];
+export function parseFacts(reply: unknown): string[] {
+  const facts: string[] = [];
   let inFence = false;
   for (const raw of String(reply ?? '').split(/\r?\n/)) {
     if (/^\s*```/.test(raw)) {

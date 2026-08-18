@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Correction pattern detection — ported from pi-hermes-memory's
  * correction-detector.ts (MIT). A two-pass filter on user messages:
@@ -13,7 +12,7 @@
  */
 
 /** Strong patterns — always trigger (high confidence these are corrections) */
-export const CORRECTION_STRONG_PATTERNS = [
+export const CORRECTION_STRONG_PATTERNS: RegExp[] = [
   /don'?t do that/i,
   /not like that/i,
   /^I said\b/i,
@@ -24,7 +23,7 @@ export const CORRECTION_STRONG_PATTERNS = [
 ];
 
 /** Weak patterns — only trigger if followed by a directive (verb or "the/that/this") */
-export const CORRECTION_WEAK_PATTERNS = [
+export const CORRECTION_WEAK_PATTERNS: RegExp[] = [
   /^no[,.\s!]/i,
   /^wrong[,.\s!]/i,
   /^actually[,.\s]/i,
@@ -32,7 +31,7 @@ export const CORRECTION_WEAK_PATTERNS = [
 ];
 
 /** Negative patterns — suppress trigger even if a positive pattern matches */
-export const CORRECTION_NEGATIVE_PATTERNS = [
+export const CORRECTION_NEGATIVE_PATTERNS: RegExp[] = [
   /^no worries/i,
   /^no problem/i,
   /^no thanks/i,
@@ -42,7 +41,7 @@ export const CORRECTION_NEGATIVE_PATTERNS = [
 ];
 
 /** Directive words required after weak correction patterns */
-export const CORRECTION_DIRECTIVE_WORDS = [
+export const CORRECTION_DIRECTIVE_WORDS: string[] = [
   'use', "don't", 'dont', 'do', 'try', 'make', 'run', 'install', 'add',
   'remove', 'delete', 'change', 'fix', 'put', 'set', 'write', 'go', 'stop',
   'start', 'the', 'that', 'this', 'it',
@@ -51,10 +50,8 @@ export const CORRECTION_DIRECTIVE_WORDS = [
 /**
  * Extract the directive part from a correction message.
  * E.g. "no, use pnpm instead" -> "use pnpm instead"
- * @param {string} text
- * @returns {string}
  */
-export function extractCorrectionDirective(text) {
+export function extractCorrectionDirective(text: string): string {
   const cleaned = text
     .replace(/^(no|wrong|actually|stop|don'?t|that'?s not|I said|I told you)[,.\s!]+/i, '')
     .replace(/^(please\s+)?/i, '')
@@ -62,19 +59,19 @@ export function extractCorrectionDirective(text) {
   return cleaned || text;
 }
 
-function escapeRegexLiteral(value) {
+function escapeRegexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function hasDirectiveWord(remainder, words) {
+function hasDirectiveWord(remainder: string, words: string[]): boolean {
   if (words.length === 0) return false;
   const source = words.map(escapeRegexLiteral).join('|');
   return new RegExp(`\\b(${source})\\b`, 'i').test(remainder);
 }
 
-function compilePatterns(configured, defaults) {
+function compilePatterns(configured: string[] | undefined, defaults: RegExp[]): RegExp[] {
   if (configured === undefined) return defaults;
-  const patterns = [];
+  const patterns: RegExp[] = [];
   for (const source of configured) {
     try {
       patterns.push(new RegExp(source, 'i'));
@@ -85,17 +82,30 @@ function compilePatterns(configured, defaults) {
   return patterns;
 }
 
+export interface CorrectionConfig {
+  correctionStrongPatterns?: string[];
+  correctionWeakPatterns?: string[];
+  correctionNegativePatterns?: string[];
+  correctionDirectiveWords?: string[];
+}
+
+/** Read one optional string-array config field from a loose config object. */
+function readStrArray(config: unknown, key: string): string[] | undefined {
+  if (!config || typeof config !== 'object') return undefined;
+  const v = (config as Record<string, unknown>)[key];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+}
+
 /**
  * Check if a user message is a correction using the two-pass filter.
- * @param {string} text
- * @param {{ correctionStrongPatterns?: string[], correctionWeakPatterns?: string[], correctionNegativePatterns?: string[], correctionDirectiveWords?: string[] }} [config]
- * @returns {boolean}
+ * The full plugin config object is accepted as-is (it carries no pattern
+ * overrides unless the user configured custom regexes).
  */
-export function isCorrection(text, config) {
-  const negative = compilePatterns(config?.correctionNegativePatterns, CORRECTION_NEGATIVE_PATTERNS);
-  const strong = compilePatterns(config?.correctionStrongPatterns, CORRECTION_STRONG_PATTERNS);
-  const weak = compilePatterns(config?.correctionWeakPatterns, CORRECTION_WEAK_PATTERNS);
-  const directiveWords = config?.correctionDirectiveWords ?? CORRECTION_DIRECTIVE_WORDS;
+export function isCorrection(text: string, config?: unknown): boolean {
+  const negative = compilePatterns(readStrArray(config, 'correctionNegativePatterns'), CORRECTION_NEGATIVE_PATTERNS);
+  const strong = compilePatterns(readStrArray(config, 'correctionStrongPatterns'), CORRECTION_STRONG_PATTERNS);
+  const weak = compilePatterns(readStrArray(config, 'correctionWeakPatterns'), CORRECTION_WEAK_PATTERNS);
+  const directiveWords = readStrArray(config, 'correctionDirectiveWords') ?? CORRECTION_DIRECTIVE_WORDS;
 
   // Negative patterns first — suppress even if positive matches.
   for (const pattern of negative) {

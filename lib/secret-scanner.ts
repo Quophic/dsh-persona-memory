@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Content scanner — ported from pi-hermes-memory's content-scanner.ts
  * (MIT, https://github.com/chandra447/pi-hermes-memory), which itself ports
@@ -7,7 +6,16 @@
  * exfiltration payloads, no credentials, no invisible unicode.
  */
 
-const MEMORY_THREAT_PATTERNS = [
+interface PatternRule {
+  pattern: RegExp;
+  id: string;
+}
+
+interface SecretRule extends PatternRule {
+  severity: 'high' | 'medium';
+}
+
+const MEMORY_THREAT_PATTERNS: PatternRule[] = [
   { pattern: /ignore\s+(previous|all|above|prior)\s+instructions/i, id: 'prompt_injection' },
   { pattern: /you\s+are\s+now\s+/i, id: 'role_hijack' },
   { pattern: /do\s+not\s+tell\s+the\s+user/i, id: 'deception_hide' },
@@ -21,7 +29,7 @@ const MEMORY_THREAT_PATTERNS = [
   { pattern: /\$HOME\/\.ssh|~\/\.ssh/i, id: 'ssh_access' },
 ];
 
-const SECRET_PATTERNS = [
+const SECRET_PATTERNS: SecretRule[] = [
   // API keys
   { pattern: /\bsk-ant-api\S{10,}\b/, id: 'anthropic_api_key', severity: 'high' },
   { pattern: /\bsk-or-v1-\S{10,}\b/, id: 'openrouter_api_key', severity: 'high' },
@@ -56,11 +64,11 @@ const INVISIBLE_CHARS = new Set([
 
 /**
  * Scan memory content for injection/exfiltration patterns AND secret leaks.
- * @param {string} content
- * @returns {string | null} an explanation of what was blocked, or null when safe
+ * @param content the content to scan
+ * @returns an explanation of what was blocked, or null when safe
  */
-export function scanContent(content) {
-  if (typeof content !== 'string' || content.length === 0) return null;
+export function scanContent(content: string): string | null {
+  if (content.length === 0) return null;
   for (const char of content) {
     if (INVISIBLE_CHARS.has(char)) {
       return `Blocked: content contains invisible unicode character U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} (possible injection).`;

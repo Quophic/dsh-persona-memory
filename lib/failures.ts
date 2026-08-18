@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Failure memory (failures.md) — ported in spirit from pi-hermes-memory.
  *
@@ -10,19 +9,22 @@
  * `failureMaxEntries`) are injected every request so the model learns from
  * past mistakes before repeating them.
  */
-import { decodeEntry } from './memory-store.js';
+import { decodeEntry, type MemoryStore } from './memory-store.js';
 
 /** hermes MemoryCategory set */
 export const FAILURE_CATEGORIES = ['failure', 'correction', 'insight', 'preference', 'convention', 'tool-quirk'];
 
+export interface FailureOptions {
+  category?: string;
+  failureReason?: string;
+  correctedTo?: string;
+}
+
 /**
  * Build a structured failure entry line (hermes buildFailureMemoryText).
- * @param {string} content
- * @param {{ category?: string, failureReason?: string, correctedTo?: string }} opts
- * @returns {string}
  */
-export function buildFailureText(content, opts = {}) {
-  const category = FAILURE_CATEGORIES.includes(opts.category) ? opts.category : 'failure';
+export function buildFailureText(content: string, opts: FailureOptions = {}): string {
+  const category = FAILURE_CATEGORIES.includes(opts.category ?? '') ? opts.category : 'failure';
   const parts = [`[${category}] ${content.trim()}`];
   if (opts.failureReason?.trim()) parts.push(`Failed: ${opts.failureReason.trim()}`);
   if (opts.correctedTo?.trim()) parts.push(`Corrected to: ${opts.correctedTo.trim()}`);
@@ -33,11 +35,9 @@ export function buildFailureText(content, opts = {}) {
  * Render recent failures for prompt injection (hermes renderFailureBlock +
  * getFailureEntries): entries created within the age window, newest first,
  * bullets, bounded by max entries.
- * @param {ReturnType<import('./memory-store.js').createMemoryStore>} store
- * @param {{ failureMaxAgeDays: number, failureMaxEntries: number }} cfg
- * @returns {string} empty string when there is nothing recent
+ * @returns empty string when there is nothing recent
  */
-export function renderRecentFailures(store, cfg) {
+export function renderRecentFailures(store: MemoryStore, cfg: { failureMaxAgeDays: number; failureMaxEntries: number }): string {
   const raw = store.readRawSync('failure');
   if (raw.length === 0) return '';
   const cutoff = new Date();

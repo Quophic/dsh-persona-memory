@@ -1,30 +1,38 @@
-// @ts-check
 /**
  * The `memory` tool: read / add / update / delete / rewrite the persistent
  * persona memory (MEMORY.md and USER.md). On-disk format is shared with
  * pi-hermes-memory (entries separated by `§`, metadata in HTML comments).
  */
 import { HarnessError } from '@deepseek-ai/dsh-llm';
-import { defineTool } from '@deepseek-ai/dsh-tools';
-import { maybeConsolidate } from './consolidate.js';
+import { defineTool, type JsonValue, type ToolRunContext } from '@deepseek-ai/dsh-tools';
+import { maybeConsolidate, type ConsolidationConfig } from './consolidate.js';
 import { buildFailureText } from './failures.js';
-import { latestRoute } from './llm-helper.js';
+import { latestRoute, type LlmRoute } from './llm-helper.js';
 import { safeProjectName } from './projects.js';
 import { scanContent } from './secret-scanner.js';
+import type { MemoryKind, MemoryStore } from './memory-store.js';
+import type { Context } from '@deepseek-ai/cordis';
 
-/** @param {'memory' | 'user' | 'failure'} which @param {{ memoryCharLimit: number, userCharLimit: number, failureCharLimit?: number, projectCharLimit?: number }} config */
-function limitFor(which, config) {
+export interface MemoryToolConfig extends ConsolidationConfig {
+  memoryCharLimit: number;
+  userCharLimit: number;
+  usageNudgeThreshold: number;
+}
+
+function limitFor(which: MemoryKind, config: { memoryCharLimit: number; userCharLimit: number; failureCharLimit?: number }): number {
   if (which === 'user') return config.userCharLimit;
   if (which === 'failure') return config.failureCharLimit ?? config.memoryCharLimit * 2; // hermes: failures get more space
   return config.memoryCharLimit;
 }
 
-/**
- * @param {import('./memory-store.js').ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
- * @param {(name: string) => import('./memory-store.js').ReturnType<typeof import('./memory-store.js').createMemoryStore>} getProjectStore
- * @param {{ memoryCharLimit: number, userCharLimit: number, failureCharLimit?: number, projectCharLimit?: number, enableSecretScanning: boolean, usageNudgeThreshold: number, autoConsolidate: boolean, consolidateStaleDays: number, consolidateTimeoutMs: number }} config
- */
-export function registerMemoryTool(ctx, store, config, getProjectStore) {
+export type ProjectStoreProvider = (name: string) => MemoryStore;
+
+export function registerMemoryTool(
+  ctx: Context,
+  store: MemoryStore,
+  config: MemoryToolConfig,
+  getProjectStore: ProjectStoreProvider,
+): void {
   ctx.tools.register(
     defineTool({
       name: 'memory',
@@ -83,9 +91,9 @@ export function registerMemoryTool(ctx, store, config, getProjectStore) {
         },
       },
       async execute(args, exec) {
-        const projectName = args.project !== undefined && args.project !== null && String(args.project).trim() !== ''
+        const projectName = (args.project !== undefined && args.project !== null && String(args.project).trim() !== ''
           ? safeProjectName(args.project)
-          : undefined;
+          : undefined) ?? undefined;
         const targetStore = projectName ? getProjectStore(projectName) : store;
         const which = projectName ? 'memory' : (args.which ?? 'memory');
         if (which !== 'memory' && which !== 'user' && which !== 'failure') {
@@ -94,10 +102,10 @@ export function registerMemoryTool(ctx, store, config, getProjectStore) {
         const limit = projectName ? (config.projectCharLimit ?? 5000) : limitFor(which, config);
         const label = projectName ? `project:${projectName}` : which;
 
-        let result;
+        let result: Record<string, unknown>;
         switch (args.action) {
           case 'read':
-            result = await targetStore.read(which, limit);
+            result = (await targetStore.read(which, limit)) as unknown as Record<string, unknown>;
             break;
           case 'add': {
             const content = requireText(args.content, 'add');
@@ -106,7 +114,7 @@ export function registerMemoryTool(ctx, store, config, getProjectStore) {
                 ? buildFailureText(content, { category: args.category, failureReason: args.failure_reason, correctedTo: args.corrected_to })
                 : content;
             rejectBlocked(entry, config);
-            result = await targetStore.add(which, entry, { dedupe: which === 'failure' });
+            result = (await targetStore.add(which, entry, { dedupe: which === 'failure' })) as unknown as Record<string, unknown>;
             if (result.duplicate) {
               throw new HarnessError('That failure is already recorded — update it instead of adding a duplicate.', 'MEMORY_DUPLICATE_ENTRY');
             }
@@ -119,26 +127,26 @@ export function registerMemoryTool(ctx, store, config, getProjectStore) {
             const content = requireText(args.content, 'update');
             const match = requireText(args.match, 'update', 'match');
             rejectBlocked(content, config);
-            result = await targetStore.update(which, match, content);
+            result = (await targetStore.update(which, match, content)) as unknown as Record<string, unknown>;
             if (result.overflow) {
               result = await retryAfterConsolidation(args.action, { content, match }, config, ctx, targetStore, routeFor(exec), which, projectName, limit);
             }
             break;
           }
           case 'delete':
-            result = await targetStore.remove(which, requireText(args.match, 'delete', 'match'));
+            result = (await targetStore.remove(which, requireText(args.match, 'delete', 'match'))) as unknown as Record<string, unknown>;
             break;
           case 'rewrite': {
             const content = requireText(args.content, 'rewrite');
             rejectBlocked(content, config);
-            result = await targetStore.rewrite(which, content);
+            result = (await targetStore.rewrite(which, content)) as unknown as Record<string, unknown>;
             if (result.overflow) {
               result = await retryAfterConsolidation(args.action, content, config, ctx, targetStore, routeFor(exec), which, projectName, limit);
             }
             break;
           }
           default:
-            throw new HarnessError(`Unknown action "${args.action}"`, 'MEMORY_INVALID_ACTION');
+            throw new HarnessError(`Unknown action "${String(args.action)}"`, 'MEMORY_INVALID_ACTION');
         }
         if (result.conflict) {
           throw new HarnessError(
@@ -150,33 +158,33 @@ export function registerMemoryTool(ctx, store, config, getProjectStore) {
 
         // Over budget after a mutation? Fire an LLM consolidation in the
         // background (hermes behavior: auto-consolidate instead of rejecting).
-        if (config.autoConsolidate && (args.action === 'add' || args.action === 'update' || args.action === 'rewrite') && used.charCount > limit && !used.consolidating) {
+        if (config.autoConsolidate && (args.action === 'add' || args.action === 'update' || args.action === 'rewrite') && (used.charCount as number) > limit && !used.consolidating) {
           const route = routeFor(exec);
           if (route) {
             used.consolidating = true;
             maybeConsolidate(ctx, targetStore, route, config, which, projectName ? (config.projectCharLimit ?? 5000) : undefined).catch((err) =>
-              ctx.logger.warn('[dsh-persona-memory] consolidation trigger failed: %s', err?.message ?? String(err)),
+              ctx.logger.warn('[dsh-persona-memory] consolidation trigger failed: %s', (err as Error | undefined)?.message ?? String(err)),
             );
           }
         }
-        return used;
+        return used as unknown as Record<string, JsonValue>;
       },
     }),
   );
 }
 
-/** @param {unknown} value @param {string} action @param {string} [field] @returns {string} */
-function requireText(value, action, field = 'content') {
+function requireText(value: unknown, action: string, field = 'content'): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new HarnessError(`memory action "${action}" requires a non-empty \`${field}\``, 'MEMORY_MISSING_ARGUMENT');
   }
   return value.trim();
 }
 
-/** @param {{ agent?: { session?: import('@deepseek-ai/dsh-session').Session } } | undefined} exec */
-function routeFor(exec) {
-  return exec?.agent?.session ? latestRoute(exec.agent.session) : undefined;
+function routeFor(exec: ToolRunContext): LlmRoute | undefined {
+  return exec.agent?.session ? latestRoute(exec.agent.session) : undefined;
 }
+
+type RetryPayload = string | { content: string; match: string };
 
 /**
  * A store mutation was refused because it would exceed the char limit
@@ -185,17 +193,18 @@ function routeFor(exec) {
  * the target FIRST (awaited — unlike the background nudge below) and retry the
  * mutation once against the freed space. If it is still over budget, surface
  * the capacity error so the model can merge/trim instead of looping forever.
- * @param {'add' | 'update' | 'rewrite'} action
- * @param {string | { content: string, match: string }} payload
- * @param {{ autoConsolidate: boolean, consolidateStaleDays: number, consolidateTimeoutMs: number }} config
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {ReturnType<typeof import('./memory-store.js').createMemoryStore>} targetStore
- * @param {{ provider: string, model: string } | undefined} route
- * @param {'memory' | 'user' | 'failure'} which
- * @param {string | undefined} projectName
- * @param {number} limit
  */
-async function retryAfterConsolidation(action, payload, config, ctx, targetStore, route, which, projectName, limit) {
+async function retryAfterConsolidation(
+  action: 'add' | 'update' | 'rewrite',
+  payload: RetryPayload,
+  config: ConsolidationConfig,
+  ctx: Context,
+  targetStore: MemoryStore,
+  route: LlmRoute | undefined,
+  which: MemoryKind,
+  projectName: string | undefined,
+  limit: number,
+): Promise<Record<string, unknown>> {
   if (!config.autoConsolidate || !route) {
     throw new HarnessError(
       `Memory is at capacity (limit ${limit} chars). Consolidate first with a rewrite, or remove old entries, then retry.`,
@@ -203,14 +212,14 @@ async function retryAfterConsolidation(action, payload, config, ctx, targetStore
     );
   }
   await maybeConsolidate(ctx, targetStore, route, config, which, projectName ? limit : undefined);
-  let retried;
+  let retried: Record<string, unknown>;
   if (action === 'add') {
-    retried = await targetStore.add(which, /** @type {string} */ (payload), { dedupe: which === 'failure' });
+    retried = (await targetStore.add(which, payload as string, { dedupe: which === 'failure' })) as unknown as Record<string, unknown>;
   } else if (action === 'update') {
-    const { content, match } = /** @type {{ content: string, match: string }} */ (payload);
-    retried = await targetStore.update(which, match, content);
+    const { content, match } = payload as { content: string; match: string };
+    retried = (await targetStore.update(which, match, content)) as unknown as Record<string, unknown>;
   } else {
-    retried = await targetStore.rewrite(which, /** @type {string} */ (payload));
+    retried = (await targetStore.rewrite(which, payload as string)) as unknown as Record<string, unknown>;
   }
   if (retried.overflow || retried.conflict) {
     throw new HarnessError(
@@ -221,8 +230,7 @@ async function retryAfterConsolidation(action, payload, config, ctx, targetStore
   return { ...retried, consolidating: true };
 }
 
-/** @param {string} content @param {{ enableSecretScanning: boolean }} config */
-function rejectBlocked(content, config) {
+function rejectBlocked(content: string, config: { enableSecretScanning: boolean }): void {
   if (!config.enableSecretScanning) return;
   const blocked = scanContent(content);
   if (blocked) {
@@ -232,13 +240,9 @@ function rejectBlocked(content, config) {
 
 /**
  * Attach usage reporting to every result (exported for testing).
- * @param {Record<string, any>} result
- * @param {'memory' | 'user'} which
- * @param {number} limit
- * @param {number} nudgeThreshold
  */
-export function withUsage(result, which, limit, nudgeThreshold) {
-  const charCount = result.charCount ?? 0;
+export function withUsage(result: Record<string, unknown>, which: string, limit: number, nudgeThreshold: number): Record<string, unknown> {
+  const charCount = (result.charCount as number | undefined) ?? 0;
   const pct = limit > 0 ? Math.min(100, Math.round((charCount / limit) * 100)) : 0;
   return {
     ...result,
@@ -251,17 +255,17 @@ export function withUsage(result, which, limit, nudgeThreshold) {
   };
 }
 
-/** @param {unknown} value @returns {string} */
-function formatResult(value) {
-  const v = /** @type {Record<string, any>} */ (value);
+function formatResult(value: unknown): string {
+  const v = value as Record<string, unknown>;
   if (v.content !== undefined && v.added === undefined && v.updated === undefined && v.deleted === undefined && v.rewritten === undefined) {
     const usage = usageLine(v);
-    return usage ? `${v.content}\n\n${usage}` : v.content;
+    return usage ? `${v.content}\n\n${usage}` : String(v.content);
   }
-  const file = v.which?.startsWith?.('project:')
-    ? `project/${v.which.slice(8)}/MEMORY.md`
-    : `memory/${v.which === 'user' ? 'USER.md' : v.which === 'failure' ? 'failures.md' : 'MEMORY.md'}`;
-  let text;
+  const whichStr = String(v.which ?? '');
+  const file = whichStr.startsWith?.('project:')
+    ? `project/${whichStr.slice(8)}/MEMORY.md`
+    : `memory/${whichStr === 'user' ? 'USER.md' : whichStr === 'failure' ? 'failures.md' : 'MEMORY.md'}`;
+  let text: string;
   if (v.added) text = `Saved to ${file}. Now ${v.entryCount} entries (${v.charCount} chars).`;
   else if (v.updated !== undefined) {
     text = v.updated
@@ -281,8 +285,7 @@ function formatResult(value) {
   return text;
 }
 
-/** @param {Record<string, any>} v @returns {string} */
-function usageLine(v) {
+function usageLine(v: Record<string, unknown>): string {
   if (typeof v.usagePct !== 'number' || typeof v.limit !== 'number') return '';
   let line = `Usage: ${v.usagePct}% (${v.charCount} chars / limit ${v.limit})`;
   if (v.consolidating) {

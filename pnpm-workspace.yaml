@@ -1,0 +1,8 @@
+# pnpm 10 build-script approval (CI uses npm; this file is for local pnpm).
+# esbuild's postinstall validates its native binary — approved.
+# protobufjs/sharp are @xenova/transformers transitive native deps not used
+# locally; their build scripts are ignored.
+allowBuilds:
+  esbuild: true
+  protobufjs: false
+  sharp: false

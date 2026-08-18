@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The `/standing` user command — the only write path into STANDING.md besides
  * a direct file edit. The model never writes standing instructions (they are
@@ -9,12 +8,13 @@
  *   /standing remove <n>     — remove by 1-based position
  *   /standing clear          — remove all
  */
+import type { StandingStore } from './standing.js';
+import type { Context } from '@deepseek-ai/cordis';
+// Type-only namespace import: loads dsh-commands' `declare module` augmentation
+// so `ctx.commands` resolves on the cordis Context (stripped at runtime).
+import type * as _DshCommands from '@deepseek-ai/dsh-commands';
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {ReturnType<import('./standing.js').createStandingStore>} store
- */
-export function registerStandingCommand(ctx, store) {
+export function registerStandingCommand(ctx: Context, store: StandingStore): void {
   ctx.commands.register({
     name: 'standing',
     description:

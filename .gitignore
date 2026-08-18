@@ -1,6 +1,13 @@
 # dependencies / local junctions (host copies for tests)
 node_modules/
 
+# pnpm store cache (local)
+.pnpm-store/
+
+# build output — generated from TypeScript sources (tsc + esbuild)
+dist/
+client/client.js
+
 # stray runtime logs (restart helper logs to ~/.dsh/web-logs now)
 .web/
 

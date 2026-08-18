@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * dsh-persona-memory — persistent long-term persona memory for DeepSeek Harness.
  *
@@ -22,37 +21,81 @@ import os from 'node:os';
 import path from 'node:path';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import { createEmbeddingProvider } from './lib/embedding.js';
-import { registerLifecycleHooks } from './lib/learning.js';
+import { registerLifecycleHooks, type LearningConfig } from './lib/learning.js';
 import { renderRecentFailures } from './lib/failures.js';
-import { createMemoryStore } from './lib/memory-store.js';
+import { createMemoryStore, type MemoryStore } from './lib/memory-store.js';
 import { registerMemorySearchTool } from './lib/memory-search-tool.js';
-import { registerMemoryTool } from './lib/memory-tool.js';
+import { registerMemoryTool, type MemoryToolConfig } from './lib/memory-tool.js';
 import { makeAdminRoutes, profilePatchPath, startAutoProtect } from './lib/admin.js';
 import { renderMemoryBlock } from './lib/prompt.js';
 import { createFtsIndex } from './lib/fts.js';
 import { createVectorIndex } from './lib/vector-index.js';
 import { detectProject, resolveProjectsRoot } from './lib/projects.js';
 import { registerStandingCommand } from './lib/standing-command.js';
-import { createStandingStore } from './lib/standing.js';
+import { createStandingStore, type StandingStore } from './lib/standing.js';
+import type { Context } from '@deepseek-ai/cordis';
 
-const name = 'dsh-persona-memory';
+export const name = 'dsh-persona-memory';
 
 /** Services required by this plugin (harness host plane). */
-const inject = ['tools', 'systemPrompt', 'commands', 'webServer'];
+export const inject = ['tools', 'systemPrompt', 'commands', 'webServer'];
 
 const PI_HERMES_DIR = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
 
-/** @param {{ dir?: string } | undefined} cfg */
-function resolveDir(cfg) {
+export interface PluginConfig {
+  dir?: string;
+  memoryCharLimit: number;
+  userCharLimit: number;
+  enableSecretScanning: boolean;
+  inject: boolean;
+  sectionOrder: number;
+  searchMaxResults: number;
+  usageNudgeThreshold: number;
+  correctionDetection: boolean;
+  correctionPatternDetection: boolean;
+  correctionRateLimitTurns: number;
+  learnEnabled: boolean;
+  learnIntervalTurns: number;
+  learnRecentTurns: number;
+  learnMaxChars: number;
+  learnTimeoutMs: number;
+  autoConsolidate: boolean;
+  consolidateStaleDays: number;
+  consolidateTimeoutMs: number;
+  standingEnabled: boolean;
+  standingCharLimit: number;
+  standingMaxEntries: number;
+  failureInjectionEnabled: boolean;
+  failureMaxAgeDays: number;
+  failureMaxEntries: number;
+  failureCharLimit: number;
+  projectEnabled: boolean;
+  projectCharLimit: number;
+  memoryFtsEnabled: boolean;
+  vectorEnabled: boolean;
+  vectorIndexDir: string;
+  embeddingProvider: string;
+  embeddingBaseUrl: string;
+  embeddingApiKey: string;
+  embeddingModel: string;
+  embeddingCacheDir: string;
+  embeddingRemoteHost: string;
+  adminProfile: string;
+  autoBackupMin: number;
+  autoSwitchOnPiLoss: boolean;
+  /** Loose extras accepted from the patch/config (schema-driven admin page). */
+  [key: string]: unknown;
+}
+
+function resolveDir(cfg: { dir?: string } | undefined): string {
   if (cfg?.dir) return cfg.dir;
   // Share memory with Pi's pi-hermes-memory when that store already exists.
   if (fs.existsSync(path.join(PI_HERMES_DIR, 'MEMORY.md'))) return PI_HERMES_DIR;
   return dshHomePath('memory');
 }
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx @param {Record<string, unknown> | undefined} config */
-function apply(ctx, config) {
-  const cfg = {
+export function apply(ctx: Context, config?: Record<string, unknown>): void {
+  const cfg: PluginConfig = {
     dir: resolveDir(config),
     memoryCharLimit: 5000,
     userCharLimit: 5000, // aligned with pi-hermes-memory DEFAULT_USER_CHAR_LIMIT
@@ -112,15 +155,13 @@ function apply(ctx, config) {
     // auto-protect: periodic backup (minutes; 0=off) + Pi-loss fallback
     autoBackupMin: 60,
     autoSwitchOnPiLoss: true,
-    ...(config ?? {}),
+    ...(config as Partial<PluginConfig> | undefined),
   };
   cfg.dir = resolveDir(config); // explicit config.dir wins; defaults re-resolved
 
   const projectsRoot = resolveProjectsRoot(cfg.dir);
-  /** @type {Map<string, ReturnType<typeof createMemoryStore>>} */
-  const projectStores = new Map();
-  /** @param {string} name @returns {ReturnType<typeof createMemoryStore>} */
-  const getProjectStore = (name) => {
+  const projectStores = new Map<string, MemoryStore>();
+  const getProjectStore = (name: string): MemoryStore => {
     let ps = projectStores.get(name);
     if (!ps) {
       ps = createMemoryStore({ dir: path.join(projectsRoot, name), limits: { memory: cfg.projectCharLimit ?? 5000 } });
@@ -137,7 +178,7 @@ function apply(ctx, config) {
       failure: cfg.failureCharLimit ?? cfg.memoryCharLimit * 2,
     },
   });
-  const standing = createStandingStore({
+  const standing: StandingStore = createStandingStore({
     dir: cfg.dir,
     maxEntries: cfg.standingMaxEntries,
     maxChars: cfg.standingCharLimit,
@@ -153,9 +194,9 @@ function apply(ctx, config) {
     provider: embedding,
   });
 
-  registerMemoryTool(ctx, store, cfg, getProjectStore);
+  registerMemoryTool(ctx, store, cfg as MemoryToolConfig, getProjectStore);
   registerMemorySearchTool(ctx, store, cfg, getProjectStore, fts, vector);
-  registerLifecycleHooks(ctx, store, cfg);
+  registerLifecycleHooks(ctx, store, cfg as LearningConfig);
 
   // 记忆管理设置页（browser half）：/api/persona-memory/* 路由。
   // 配置写回目标 = 当前 profile 的 cordis.patch.yml 中 persona-memory 段。
@@ -181,7 +222,11 @@ function apply(ctx, config) {
       cfg,
       profilePatch: profilePatchPath(profileName),
       log: (s) => ctx.logger.info(s),
-      setInterval: (fn, delay) => (timerService ? timerService.interval(fn, delay) : setInterval(fn, delay)),
+      setInterval: (fn, delay) => {
+        if (timerService) return timerService.interval(fn, delay);
+        const handle = setInterval(fn, delay);
+        return () => clearInterval(handle);
+      },
     });
     ctx.effect(() => disposer);
   }
@@ -208,7 +253,7 @@ function apply(ctx, config) {
       });
     }
     if (cfg.projectEnabled) {
-      ctx.systemPrompt.variable('project_block', (context) => {
+      ctx.systemPrompt.variable('project_block', (context: { agent?: { session?: { header?: { cwd?: string } } } }) => {
         const cwd = context?.agent?.session?.header?.cwd;
         if (!cwd) return '';
         const project = detectProject(cwd, projectsRoot);
@@ -239,5 +284,4 @@ function apply(ctx, config) {
   }
 }
 
-export { apply, inject, name };
 export default { apply, inject, name };

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Per-request memory injection. The system-prompt variable provider is
  * synchronous, so this reads the small memory files synchronously each
@@ -8,16 +7,15 @@
  * pi-hermes-memory MemoryStore.fenceBlock — so stored memory is never
  * mistaken for active user instructions.
  */
+import type { MemoryStore } from './memory-store.js';
 
 /**
- * @param {import('./memory-store.js').ReturnType<typeof import('./memory-store.js').createMemoryStore>} store
- * @param {{ memoryCharLimit: number, userCharLimit: number }} config
- * @returns {string} the `{{memory_profile}}` variable value
+ * @returns the `{{memory_profile}}` variable value
  */
-export function renderMemoryBlock(store, config) {
+export function renderMemoryBlock(store: MemoryStore, config: { memoryCharLimit: number; userCharLimit: number }): string {
   const mem = store.readSync('memory', config.memoryCharLimit);
   const user = store.readSync('user', config.userCharLimit);
-  const parts = [];
+  const parts: string[] = [];
   if (mem.entryCount > 0) parts.push(`### MEMORY (facts, preferences, conventions)\n${mem.content}`);
   if (user.entryCount > 0) parts.push(`### USER (profile)\n${user.content}`);
   if (parts.length === 0) {

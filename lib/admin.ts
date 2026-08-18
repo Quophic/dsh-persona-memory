@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Admin routes + auto-protect for dsh-persona-memory — the browser-half
  * settings page ("记忆管理") talks to these /api/persona-memory/* routes.
@@ -23,11 +22,26 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { parseEntries, decodeEntry, ENTRY_DELIMITER } from './memory-store.js';
-import { parseInstructions, normalizeInstruction } from './standing.js';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { parseEntries, decodeEntry, ENTRY_DELIMITER, isEnoent, type DecodedEntry, type MemoryKind, type MemoryStore } from './memory-store.js';
+import { parseInstructions, normalizeInstruction, type StandingStore } from './standing.js';
+import type { VectorIndex } from './vector-index.js';
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
 
 /** Cap on JSON request bodies (admin payloads are small). */
 const MAX_JSON_BODY_BYTES = 64 * 1024;
+
+/** Read a config value as a non-empty string, else the fallback. */
+function cfgStr(cfg: Record<string, unknown>, key: string, fallback: string): string {
+  const v = cfg[key];
+  return typeof v === 'string' && v.trim() !== '' ? v : fallback;
+}
+
+/** Read a config value as a finite number, else the fallback. */
+function cfgNum(cfg: Record<string, unknown>, key: string, fallback: number): number {
+  const v = cfg[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
 
 /** Backup root under the DSH home (never inside the Pi-shared dir). */
 export const BACKUP_BASE = path.join(os.homedir(), '.dsh', 'memory-backup');
@@ -38,12 +52,12 @@ const MEMORY_FILES = ['MEMORY.md', 'USER.md', 'failures.md', 'STANDING.md'];
 const PROJECT_PREFIX = 'projects-';
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
-function isLoopbackRequest(request) {
+function isLoopbackRequest(request: IncomingMessage): boolean {
   const address = request.socket.remoteAddress;
   if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false;
   const host = request.headers.host;
   if (typeof host !== 'string') return false;
-  let hostUrl;
+  let hostUrl: URL;
   try {
     hostUrl = new URL(`http://${host}`);
   } catch {
@@ -61,43 +75,43 @@ function isLoopbackRequest(request) {
 }
 
 /** One JSON response. */
-function writeJson(res, status, body) {
+function writeJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
   res.end(payload);
 }
 
 /** Read a JSON request body (undefined when too large or unparseable). */
-async function readJsonBody(req) {
-  const chunks = [];
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
+  const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
-    const buffer = chunk;
+    const buffer = chunk as Buffer;
     size += buffer.length;
     if (size > MAX_JSON_BODY_BYTES) return undefined;
     chunks.push(buffer);
   }
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : undefined;
   } catch {
     return undefined;
   }
 }
 
 /** URL query helper (first value, decoded). */
-function queryParam(url, name) {
+function queryParam(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name);
   return value === null ? undefined : value;
 }
 
 /** today as YYYY-MM-DD (hermes date format). */
-function today() {
+function today(): string {
   return new Date().toISOString().split('T')[0];
 }
 
 /** Encode one entry line (hermes MemoryStore.encodeEntry). */
-function encodeEntry(text, created, lastReferenced, project) {
+function encodeEntry(text: string, created: string, lastReferenced: string, project?: string | null): string {
   const projectMetadata = project?.trim()
     ? `, project64=${Buffer.from(project.trim(), 'utf-8').toString('base64url')}`
     : '';
@@ -105,17 +119,17 @@ function encodeEntry(text, created, lastReferenced, project) {
 }
 
 /** Read raw file text or null when absent. */
-function readRaw(file) {
+function readRaw(file: string): string | null {
   try {
     return fs.readFileSync(file, 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') return null;
+    if (isEnoent(err)) return null;
     throw err;
   }
 }
 
 /** Write raw file text atomically (temp + rename). */
-function writeRawAtomic(file, content) {
+function writeRawAtomic(file: string, content: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   fs.writeFileSync(tmp, content, 'utf8');
@@ -123,20 +137,18 @@ function writeRawAtomic(file, content) {
 }
 
 /**
- * Resolve the active memory dir (mirrors index.js resolveDir):
+ * Resolve the active memory dir (mirrors index.ts resolveDir):
  * explicit config dir → Pi has MEMORY.md → $DSH_HOME/memory.
- * @param {object} cfg resolved plugin config
- * @returns {string}
  */
-export function resolveMemoryDir(cfg) {
+export function resolveMemoryDir(cfg: Record<string, unknown>): string {
   if (cfg.dir && String(cfg.dir).trim()) return String(cfg.dir).trim();
   const piMem = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md');
   if (fs.existsSync(piMem)) return path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
   return path.join(os.homedir(), '.dsh', 'memory');
 }
 
-/** Resolve the projects memory root (mirrors lib/projects.js resolveProjectsRoot). */
-export function resolveProjectsRoot(memoryDir) {
+/** Resolve the projects memory root (mirrors lib/projects.ts resolveProjectsRoot). */
+export function resolveProjectsRoot(memoryDir: string): string {
   const piDir = path.join(os.homedir(), '.pi', 'agent', 'pi-hermes-memory');
   if (path.resolve(memoryDir) === path.resolve(piDir)) {
     return path.join(os.homedir(), '.pi', 'agent', 'projects-memory');
@@ -145,8 +157,18 @@ export function resolveProjectsRoot(memoryDir) {
 }
 
 // ------------------------------------------------------------- schema
-/** Config schema surfaced to the admin page (mirrors index.js cfg defaults). */
-export const CFG_SCHEMA = [
+
+export interface SchemaField {
+  key: string;
+  type: 'string' | 'number' | 'bool' | 'select';
+  label: string;
+  group: string;
+  help?: string;
+  options?: string[];
+}
+
+/** Config schema surfaced to the admin page (mirrors index.ts cfg defaults). */
+export const CFG_SCHEMA: SchemaField[] = [
   { key: 'dir', type: 'string', label: '记忆目录', group: '基础', help: '显式设置优先；默认：Pi 有 MEMORY.md 才共享，否则用 $DSH_HOME/memory' },
   { key: 'memoryCharLimit', type: 'number', label: 'MEMORY 字符上限', group: '基础' },
   { key: 'userCharLimit', type: 'number', label: 'USER 字符上限', group: '基础' },
@@ -189,8 +211,8 @@ export const CFG_SCHEMA = [
   { key: 'autoSwitchOnPiLoss', type: 'bool', label: 'Pi 丢失自动切换', group: '备份', help: 'Pi 记忆消失时自动切到本地并恢复' },
 ];
 
-/** Config defaults (mirrors index.js). */
-export const CFG_DEFAULTS = {
+/** Config defaults (mirrors index.ts). */
+export const CFG_DEFAULTS: Record<string, unknown> = {
   memoryCharLimit: 5000, userCharLimit: 5000, enableSecretScanning: true, inject: true, sectionOrder: 55,
   searchMaxResults: 10, usageNudgeThreshold: 0.9, correctionDetection: true, correctionPatternDetection: true,
   correctionRateLimitTurns: 3, learnEnabled: true, learnIntervalTurns: 10, learnRecentTurns: 2, learnMaxChars: 6000,
@@ -203,12 +225,13 @@ export const CFG_DEFAULTS = {
 };
 
 // ------------------------------------------------- profile patch (config)
+
 /** Parse the persona-memory section config out of a patch YAML text. */
-export function parseSectionConfig(content, id) {
+export function parseSectionConfig(content: string, id: string): Record<string, unknown> {
   const lines = content.split(/\r?\n/);
   let inSection = false;
   let inConfig = false;
-  const cfg = {};
+  const cfg: Record<string, unknown> = {};
   for (const line of lines) {
     const trimmed = line.trim();
     if (!inSection) {
@@ -232,7 +255,7 @@ export function parseSectionConfig(content, id) {
 }
 
 /** Update (or append) the persona-memory section config in a patch YAML. */
-export function updateSectionConfig(content, id, cfg) {
+export function updateSectionConfig(content: string, id: string, cfg: Record<string, unknown>): string {
   const lines = content.split(/\r?\n/);
   let sectionIdx = -1;
   let configIdx = -1;
@@ -242,7 +265,7 @@ export function updateSectionConfig(content, id, cfg) {
     if (sectionIdx >= 0 && /^\s*config:\s*$/.test(lines[i]) && lines[i].startsWith('  ')) { configIdx = i; break; }
     if (sectionIdx >= 0 && i > sectionIdx && lines[i].trim() && !lines[i].startsWith(' ') && !/^-\s*id:/.test(t)) break;
   }
-  const line = (k) => {
+  const line = (k: string): string => {
     const v = cfg[k];
     const val = typeof v === 'boolean' ? (v ? 'true' : 'false')
       : typeof v === 'number' ? String(v)
@@ -265,7 +288,7 @@ export function updateSectionConfig(content, id, cfg) {
     }
     return lines.length;
   })();
-  const existing = new Set();
+  const existing = new Set<string>();
   for (let i = configIdx + 1; i < endIdx; i++) {
     const m = /^\s*([A-Za-z][A-Za-z0-9_]*):/.exec(lines[i]);
     if (m) {
@@ -274,15 +297,16 @@ export function updateSectionConfig(content, id, cfg) {
       if (k in cfg) lines[i] = line(k);
     }
   }
-  const insert = [];
+  const insert: string[] = [];
   for (const k of Object.keys(cfg)) if (!existing.has(k)) insert.push(line(k));
   if (insert.length) lines.splice(endIdx, 0, ...insert);
   return lines.join('\n');
 }
 
 // ------------------------------------------------------------- backup
+
 /** List current backup snapshots (single latest dir). */
-export function listBackups() {
+export function listBackups(): Array<{ name: string; files: number }> {
   try {
     const names = fs.readdirSync(BACKUP_LATEST, { withFileTypes: true })
       .filter((e) => e.isFile())
@@ -293,8 +317,8 @@ export function listBackups() {
   }
 }
 
-/** Copy one file if the source exists. @returns {Promise<boolean>} */
-async function copyIfExists(src, dst) {
+/** @returns whether the copy happened */
+async function copyIfExists(src: string, dst: string): Promise<boolean> {
   try {
     const s = fs.statSync(src);
     if (!s.isFile()) return false;
@@ -306,7 +330,7 @@ async function copyIfExists(src, dst) {
 }
 
 /** Backup all memory files + project memories into latest/ (overwrite). */
-export async function backupAll(cfg) {
+export async function backupAll(cfg: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
   const dir = resolveMemoryDir(cfg);
   let count = 0;
   for (const name of MEMORY_FILES) {
@@ -324,8 +348,12 @@ export async function backupAll(cfg) {
   return { ok: true, message: `备份完成（${count} 个文件）→ ${BACKUP_LATEST}` };
 }
 
-/** Restore from latest backup. @param {object} cfg @param {string} [targetDir] override destination (defaults to resolveMemoryDir(cfg)) @returns {number} */
-export async function restoreFromLatest(cfg, targetDir) {
+/**
+ * Restore from latest backup.
+ * @param targetDir override destination (defaults to resolveMemoryDir(cfg))
+ * @returns number of restored files
+ */
+export async function restoreFromLatest(cfg: Record<string, unknown>, targetDir?: string): Promise<number> {
   const dir = targetDir || resolveMemoryDir(cfg);
   let count = 0;
   for (const f of MEMORY_FILES) {
@@ -346,22 +374,29 @@ export async function restoreFromLatest(cfg, targetDir) {
 }
 
 // ------------------------------------------------------------- build
+
+export interface AdminRouteDeps {
+  store: MemoryStore;
+  standing: StandingStore;
+  cfg: Record<string, unknown>;
+  vector: VectorIndex;
+  /** absolute path to the active profile's cordis.patch.yml */
+  profilePatch: string;
+  log: (s: string) => void;
+}
+
+type MutateOutcome = { ok: true; message: string; entryCount?: number } | { ok: false; error: string };
+type StoreChange = (list: DecodedEntry[]) => { next?: DecodedEntry[]; error?: string; message?: string };
+type StandingChange = (list: string[]) => { next?: string[]; error?: string; message?: string };
+
 /**
  * Build the /api/persona-memory route family.
- * @param {object} deps
- * @param {ReturnType<import('./memory-store.js').createMemoryStore>} deps.store
- * @param {ReturnType<import('./standing.js').createStandingStore>} deps.standing
- * @param {object} deps.cfg resolved plugin config
- * @param {ReturnType<import('./vector-index.js').createVectorIndex>} deps.vector
- * @param {string} deps.profilePatch absolute path to the active profile's cordis.patch.yml
- * @param {(s: string) => void} deps.log
- * @returns {import('@deepseek-ai/dsh-host-webserver').WebRoute[]}
  */
-export function makeAdminRoutes(deps) {
+export function makeAdminRoutes(deps: AdminRouteDeps): WebRoute[] {
   const { store, standing, cfg, vector, profilePatch, log } = deps;
 
   /** Guard helper: fence + method check. */
-  const guard = (req, res, method) => {
+  const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' });
       return false;
@@ -373,15 +408,22 @@ export function makeAdminRoutes(deps) {
     return true;
   };
 
+  interface StoreSummary {
+    exists: boolean;
+    entries: number;
+    chars: number;
+    usagePct: number;
+  }
+
   /** Store summaries for the status page. */
-  function summarizeStores() {
-    const out = {};
-    for (const which of ['memory', 'user', 'failure']) {
+  function summarizeStores(): Record<string, StoreSummary> {
+    const out: Record<string, StoreSummary> = {};
+    for (const which of ['memory', 'user', 'failure'] as const) {
       const file = store.fileFor(which);
       const raw = readRaw(file);
-      const limit = which === 'user' ? (cfg.userCharLimit ?? 5000)
-        : which === 'failure' ? (cfg.failureCharLimit ?? (cfg.memoryCharLimit ?? 5000) * 2)
-          : (cfg.memoryCharLimit ?? 5000);
+      const limit = which === 'user' ? cfgNum(cfg, 'userCharLimit', 5000)
+        : which === 'failure' ? cfgNum(cfg, 'failureCharLimit', cfgNum(cfg, 'memoryCharLimit', 5000) * 2)
+          : cfgNum(cfg, 'memoryCharLimit', 5000);
       out[which] = raw === null
         ? { exists: false, entries: 0, chars: 0, usagePct: 0 }
         : {
@@ -395,9 +437,9 @@ export function makeAdminRoutes(deps) {
   }
 
   /** Entry lists for the status page (raw text, decoded). */
-  function listEntries() {
-    const out = { memory: [], user: [], failure: [] };
-    for (const which of Object.keys(out)) {
+  function listEntries(): Record<string, Array<{ text: string; created: string; lastReferenced: string; project: string | null }>> {
+    const out: Record<string, Array<{ text: string; created: string; lastReferenced: string; project: string | null }>> = { memory: [], user: [], failure: [] };
+    for (const which of Object.keys(out) as MemoryKind[]) {
       const raw = readRaw(store.fileFor(which));
       if (raw === null) continue;
       for (const entry of parseEntries(raw)) {
@@ -409,7 +451,7 @@ export function makeAdminRoutes(deps) {
   }
 
   /** Standing instructions (snapshot). */
-  function standingSnapshot() {
+  function standingSnapshot(): { exists: boolean; instructions: string[]; chars: number } {
     const raw = readRaw(standing.file);
     return raw === null ? { exists: false, instructions: [], chars: 0 } : {
       exists: true,
@@ -420,7 +462,7 @@ export function makeAdminRoutes(deps) {
 
   /** Index file sizes. FTS lives beside the memory files; the vector index
    *  lives under vectorIndexDir (never inside the Pi-shared dir). */
-  function statIndex(file) {
+  function statIndex(file: string): { exists: boolean; size: number } {
     try {
       const s = fs.statSync(file);
       return { exists: true, size: s.size };
@@ -428,19 +470,17 @@ export function makeAdminRoutes(deps) {
       return { exists: false, size: 0 };
     }
   }
-  const vectorIndexFile = () => path.join(
-    (cfg.vectorIndexDir && String(cfg.vectorIndexDir).trim() !== '' ? cfg.vectorIndexDir : path.join(os.homedir(), '.dsh', 'memory')),
+  const vectorIndexFile = (): string => path.join(
+    cfgStr(cfg, 'vectorIndexDir', path.join(os.homedir(), '.dsh', 'memory')),
     '.memory-vec.sqlite',
   );
 
   /** Scan the local model cache directory for downloaded embedding models. */
-  function listModels() {
-    const dir = cfg.embeddingCacheDir && String(cfg.embeddingCacheDir).trim() !== ''
-      ? cfg.embeddingCacheDir
-      : path.join(os.homedir(), '.dsh', 'models');
-    const models = [];
-    const walk = (base, prefix) => {
-      let entries;
+  function listModels(): { dir: string; models: Array<{ name: string }> } {
+    const dir = cfgStr(cfg, 'embeddingCacheDir', path.join(os.homedir(), '.dsh', 'models'));
+    const models: Array<{ name: string }> = [];
+    const walk = (base: string, prefix: string): void => {
+      let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(base, { withFileTypes: true });
       } catch {
@@ -461,11 +501,19 @@ export function makeAdminRoutes(deps) {
     return { dir, models };
   }
 
+  interface ProjectInfo {
+    name: string;
+    exists: boolean;
+    entries: number;
+    chars: number;
+    entryList: DecodedEntry[];
+  }
+
   /** List project memories. */
-  function listProjects() {
-    const projRoot = resolveProjectsRoot(cfg.dir ?? resolveMemoryDir(cfg));
-    const out = [];
-    let entries;
+  function listProjects(): ProjectInfo[] {
+    const projRoot = resolveProjectsRoot(cfgStr(cfg, 'dir', resolveMemoryDir(cfg)));
+    const out: ProjectInfo[] = [];
+    let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(projRoot, { withFileTypes: true });
     } catch {
@@ -483,8 +531,8 @@ export function makeAdminRoutes(deps) {
   }
 
   /** Mutate one project memory file. */
-  function mutateProject(project, change) {
-    const projRoot = resolveProjectsRoot(cfg.dir ?? resolveMemoryDir(cfg));
+  function mutateProject(project: string, change: StoreChange): MutateOutcome {
+    const projRoot = resolveProjectsRoot(cfgStr(cfg, 'dir', resolveMemoryDir(cfg)));
     if (!project || !/^[A-Za-z0-9._-]+$/.test(project) || project.includes('..')) {
       return { ok: false, error: 'invalid project name' };
     }
@@ -493,13 +541,13 @@ export function makeAdminRoutes(deps) {
     const list = raw !== null ? parseEntries(raw).map((x) => decodeEntry(x)) : [];
     const outcome = change(list);
     if (outcome.error) return { ok: false, error: outcome.error };
-    const next = outcome.next.map((e) => encodeEntry(e.text, e.created, e.lastReferenced));
+    const next = outcome.next!.map((e) => encodeEntry(e.text, e.created, e.lastReferenced));
     writeRawAtomic(file, next.length ? next.join(ENTRY_DELIMITER) : '');
     return { ok: true, message: outcome.message ?? `${project} 已更新（${next.length} 条）` };
   }
 
   /** Current config echoed from the resolved cfg + defaults. */
-  function currentConfig() {
+  function currentConfig(): Record<string, unknown> {
     return Object.assign({}, CFG_DEFAULTS, {
       dir: cfg.dir ?? '',
       vectorEnabled: cfg.vectorEnabled !== false,
@@ -511,7 +559,7 @@ export function makeAdminRoutes(deps) {
   }
 
   /** Full status payload for the admin page. */
-  function statusPayload() {
+  function statusPayload(): Record<string, unknown> {
     const stores = summarizeStores();
     const standingInfo = standingSnapshot();
     const dir = resolveMemoryDir(cfg);
@@ -536,21 +584,22 @@ export function makeAdminRoutes(deps) {
   }
 
   // ----------------------------------------------------------- mutations
+
   /**
    * Mutate one store by decoded-entry index.
    */
-  async function mutateStore(which, change) {
+  async function mutateStore(which: string, change: StoreChange): Promise<MutateOutcome> {
     if (!['memory', 'user', 'failure'].includes(which)) return { ok: false, error: 'invalid which' };
-    const file = store.fileFor(which);
+    const file = store.fileFor(which as MemoryKind);
     const raw = readRaw(file);
     if (raw === null) return { ok: false, error: 'file not found' };
     const current = parseEntries(raw).map(decodeEntry);
     const outcome = change(current);
     if (outcome.error) return { ok: false, error: outcome.error };
-    const next = outcome.next.map((e) => encodeEntry(e.text, e.created, e.lastReferenced));
-    const limit = which === 'user' ? (cfg.userCharLimit ?? 5000)
-      : which === 'failure' ? (cfg.failureCharLimit ?? (cfg.memoryCharLimit ?? 5000) * 2)
-        : (cfg.memoryCharLimit ?? 5000);
+    const next = outcome.next!.map((e) => encodeEntry(e.text, e.created, e.lastReferenced));
+    const limit = which === 'user' ? cfgNum(cfg, 'userCharLimit', 5000)
+      : which === 'failure' ? cfgNum(cfg, 'failureCharLimit', cfgNum(cfg, 'memoryCharLimit', 5000) * 2)
+        : cfgNum(cfg, 'memoryCharLimit', 5000);
     const charCount = next.length ? next.join(ENTRY_DELIMITER).length : 0;
     if (charCount > limit) return { ok: false, error: `容量超限（${charCount} > ${limit}），请先合并或精简` };
     writeRawAtomic(file, next.length ? next.join(ENTRY_DELIMITER) : '');
@@ -558,20 +607,21 @@ export function makeAdminRoutes(deps) {
   }
 
   /** Mutate standing instructions. */
-  async function mutateStanding(change) {
+  async function mutateStanding(change: StandingChange): Promise<MutateOutcome> {
     const raw = readRaw(standing.file);
     const current = raw === null ? [] : parseInstructions(raw);
     const outcome = change(current);
     if (outcome.error) return { ok: false, error: outcome.error };
-    const chars = outcome.next.join('\n').length;
-    if (chars > (cfg.standingCharLimit ?? 2000)) return { ok: false, error: `超过 ${cfg.standingCharLimit ?? 2000} 字符预算` };
-    writeRawAtomic(standing.file, outcome.next.length ? outcome.next.join('\n') + '\n' : '');
-    return { ok: true, message: outcome.message ?? `常驻指令已更新（${outcome.next.length} 条）` };
+    const chars = outcome.next!.join('\n').length;
+    const charLimit = cfgNum(cfg, 'standingCharLimit', 2000);
+    if (chars > charLimit) return { ok: false, error: `超过 ${charLimit} 字符预算` };
+    writeRawAtomic(standing.file, outcome.next!.length ? outcome.next!.join('\n') + '\n' : '');
+    return { ok: true, message: outcome.message ?? `常驻指令已更新（${outcome.next!.length} 条）` };
   }
 
   // -------------------------------------------------------------- routes
   return [
-    { kind: 'exact', path: '/api/persona-memory/status', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/status', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'GET')) return;
       try {
         writeJson(res, 200, statusPayload());
@@ -579,14 +629,12 @@ export function makeAdminRoutes(deps) {
         writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
       }
     } },
-    { kind: 'exact', path: '/api/persona-memory/checkModel', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/checkModel', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'GET')) return;
       const url = new URL(req.url ?? '/', 'http://localhost');
       const model = queryParam(url, 'model');
       if (!model) { writeJson(res, 200, { cached: false }); return; }
-      const base = cfg.embeddingCacheDir && String(cfg.embeddingCacheDir).trim() !== ''
-        ? cfg.embeddingCacheDir
-        : path.join(os.homedir(), '.dsh', 'models');
+      const base = cfgStr(cfg, 'embeddingCacheDir', path.join(os.homedir(), '.dsh', 'models'));
       try {
         const cfgFile = path.join(base, ...model.split('/'), 'config.json');
         const cached = fs.existsSync(cfgFile);
@@ -595,12 +643,12 @@ export function makeAdminRoutes(deps) {
         writeJson(res, 200, { cached: false });
       }
     } },
-    { kind: 'exact', path: '/api/persona-memory/configSave', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/configSave', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
       try {
-        const cfgOut = {};
+        const cfgOut: Record<string, unknown> = {};
         for (const f of CFG_SCHEMA) {
           if (!(f.key in body)) continue;
           const raw = body[f.key];
@@ -621,7 +669,7 @@ export function makeAdminRoutes(deps) {
         writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
       }
     } },
-    { kind: 'exact', path: '/api/persona-memory/update', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/update', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -636,7 +684,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/delete', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/delete', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -648,7 +696,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/projectUpdate', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/projectUpdate', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -663,7 +711,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/projectDelete', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/projectDelete', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -675,7 +723,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/backup', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/backup', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       try {
         const result = await backupAll(cfg);
@@ -684,7 +732,7 @@ export function makeAdminRoutes(deps) {
         writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
       }
     } },
-    { kind: 'exact', path: '/api/persona-memory/restoreLatest', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/restoreLatest', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       try {
         const count = await restoreFromLatest(cfg);
@@ -694,7 +742,7 @@ export function makeAdminRoutes(deps) {
         writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
       }
     } },
-    { kind: 'exact', path: '/api/persona-memory/standingAdd', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/standingAdd', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -702,12 +750,13 @@ export function makeAdminRoutes(deps) {
       if (!text) { writeJson(res, 400, { error: '指令不能为空' }); return; }
       const result = await mutateStanding((list) => {
         if (list.some((x) => x.toLowerCase() === text.toLowerCase())) return { error: '该指令已存在' };
-        if (list.length >= (cfg.standingMaxEntries ?? 20)) return { error: `常驻指令上限 ${cfg.standingMaxEntries ?? 20} 条` };
+        const maxEntries = cfgNum(cfg, 'standingMaxEntries', 20);
+        if (list.length >= maxEntries) return { error: `常驻指令上限 ${maxEntries} 条` };
         return { next: [...list, text], message: `已添加常驻指令（共 ${list.length + 1} 条）` };
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/standingUpdate', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/standingUpdate', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -723,7 +772,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/standingRemove', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/standingRemove', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       const body = await readJsonBody(req);
       if (body === undefined) { writeJson(res, 400, { error: 'invalid JSON body' }); return; }
@@ -734,7 +783,7 @@ export function makeAdminRoutes(deps) {
       });
       writeJson(res, result.ok ? 200 : 400, result);
     } },
-    { kind: 'exact', path: '/api/persona-memory/rebuildVector', handler: async (req, res) => {
+    { kind: 'exact', path: '/api/persona-memory/rebuildVector', handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!guard(req, res, 'POST')) return;
       try {
         const file = vectorIndexFile();
@@ -752,31 +801,33 @@ export function makeAdminRoutes(deps) {
 
 /**
  * Resolve the active profile's cordis.patch.yml for config write-back.
- * @param {string} profileName
- * @returns {string}
  */
-export function profilePatchPath(profileName) {
+export function profilePatchPath(profileName: string): string {
   return path.join(os.homedir(), '.dsh', 'profiles', profileName, 'cordis.patch.yml');
 }
 
 // ------------------------------------------------------- auto-protect
+
+export interface AutoProtectDeps {
+  cfg: Record<string, unknown>;
+  /** absolute path to profile patch */
+  profilePatch: string;
+  log: (s: string) => void;
+  /** injected timer (ctx.timer.interval) */
+  setInterval: (fn: () => void, delay: number) => () => void;
+}
+
 /**
  * Start the background auto-protect tick: periodic backup (autoBackupMin)
  * + Pi-loss detection (autoSwitchOnPiLoss). Returns a disposer.
- * @param {object} deps
- * @param {object} deps.cfg resolved plugin config
- * @param {string} deps.profilePatch absolute path to profile patch
- * @param {(s: string) => void} deps.log
- * @param {(fn: () => void, delay: number) => () => void} deps.setInterval injected timer (ctx.timer.interval)
- * @returns {() => void} disposer
  */
-export function startAutoProtect(deps) {
+export function startAutoProtect(deps: AutoProtectDeps): () => void {
   const { cfg, profilePatch, log, setInterval } = deps;
   let piSeen = false;
   let switched = false;
   let lastAutoBackupAt = 0;
 
-  const tick = async () => {
+  const tick = async (): Promise<void> => {
     try {
       const patch = readRaw(profilePatch);
       const patchCfg = patch ? parseSectionConfig(patch, 'persona-memory') : {};

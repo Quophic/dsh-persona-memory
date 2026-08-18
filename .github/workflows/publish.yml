@@ -27,6 +27,9 @@ jobs:
         # from the host install instead; profiles set autoInstallPeers: false).
         run: npm install
 
+      - name: Build (TypeScript → dist + client bundle)
+        run: npm run build
+
       - name: Run smoke tests
         run: node test/smoke.mjs
 

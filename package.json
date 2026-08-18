@@ -1,21 +1,27 @@
 {
   "name": "dsh-persona-memory",
-  "version": "0.1.19",
-  "description": "Persistent long-term persona memory for DeepSeek Harness: MEMORY.md/USER.md storage, memory + memory_search tools, per-request context injection, secret scanning, and a WebUI memory-management settings page. Ported in spirit from pi-hermes-memory.",
+  "version": "0.2.0",
+  "description": "Persistent long-term persona memory for DeepSeek Harness: MEMORY.md/USER.md storage, memory + memory_search tools, per-request context injection, secret scanning, and a WebUI memory-management settings page. Ported in spirit from pi-hermes-memory. TypeScript sources, built with tsc + esbuild.",
   "type": "module",
-  "main": "index.js",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./index.js",
+    ".": "./dist/index.js",
     "./client": "./client/client.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
-    "lib",
+    "dist",
     "client",
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": {
+    "build": "npm run build:host && npm run build:client",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "node scripts/build-client.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -48,6 +54,12 @@
   ],
   "dependencies": {
     "@xenova/transformers": "^2.17.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^18.3.31",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
