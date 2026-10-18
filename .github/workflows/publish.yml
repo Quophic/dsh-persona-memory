@@ -11,6 +11,9 @@ jobs:
     if: github.repository == 'Quophic/dsh-persona-memory'
     permissions:
       contents: write
+      # npm Trusted Publishing: the publish step exchanges this OIDC token for
+      # a short-lived npm credential, so no NPM_TOKEN secret is needed.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - name: Install
         # npm 7+ auto-installs the non-optional @deepseek-ai/* peers, so the
@@ -46,11 +48,15 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Publish registry
+        # No registry-url on setup-node: it would write an .npmrc auth placeholder
+        # that expects NODE_AUTH_TOKEN, and trusted publishing authenticates via
+        # OIDC instead.
+        run: npm config set registry https://registry.npmjs.org
+
       - name: Publish to npm
         if: steps.version.outputs.changed == 'true'
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
 
       - name: Tag release
         if: steps.version.outputs.changed == 'true'
