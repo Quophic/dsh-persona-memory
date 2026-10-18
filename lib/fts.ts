@@ -36,6 +36,23 @@ export interface FtsIndexConfig {
   enabled: boolean;
 }
 
+/**
+ * Translate a user query into one FTS5 MATCH expression: every
+ * whitespace-separated token becomes its own quoted phrase, joined by spaces
+ * (FTS5 implicit AND). Each token stays literal quoted text, so FTS5 syntax in
+ * user input is data, never executable — the anti-injection contract is
+ * unchanged — while non-adjacent keywords now match the same entry.
+ * @returns the MATCH expression, or null when the query carries no word tokens
+ */
+export function buildFtsQuery(query: string): string | null {
+  const tokens = query
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => /[\p{L}\p{N}]/u.test(token));
+  if (tokens.length === 0) return null;
+  return tokens.map((token) => '"' + token.replace(/"/g, '""') + '"').join(' ');
+}
+
 export function createFtsIndex(config: FtsIndexConfig): FtsIndex {
   const dbPath = path.join(config.dir, '.memory-index.sqlite');
   let db: import('node:sqlite').DatabaseSync | null = null;
@@ -98,9 +115,11 @@ export function createFtsIndex(config: FtsIndexConfig): FtsIndex {
     const fresh = await ensureBuilt(store);
     if (!fresh) return null;
     try {
-      // Treat the whole query as one literal phrase (FTS5 syntax is data,
-      // never executable — same contract as dsh-session-query-sqlite).
-      const phrase = '"' + query.replace(/"/g, '""') + '"';
+      // Every token is its own quoted phrase joined by implicit AND: FTS5
+      // syntax stays data (never executable, same contract as
+      // dsh-session-query-sqlite), and keywords need not be adjacent.
+      const phrase = buildFtsQuery(query);
+      if (phrase === null) return [];
       const rows = which === 'all'
         ? db!.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?').all(phrase, limit)
         : db!.prepare('SELECT which, created, text FROM memory_fts WHERE memory_fts MATCH ? AND which = ? ORDER BY rank LIMIT ?').all(phrase, which, limit);

@@ -479,12 +479,17 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
 
   async function search(query: string, which: MemoryKind | 'all', maxResults: number): Promise<StoreSearchHit[]> {
     const wanted: MemoryKind[] = which === 'all' ? ['memory', 'user', 'failure'] : [which];
-    const q = query.toLowerCase();
+    // Whitespace-separated terms are an AND over case-insensitive substrings:
+    // the linear fallback (and every project-scoped search) then behaves like
+    // the FTS5 token query instead of requiring one contiguous phrase.
+    const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
     const hits: StoreSearchHit[] = [];
+    if (terms.length === 0) return hits;
     for (const w of wanted) {
       const list = decoded(await readEntries(fileFor(w)));
       for (const entry of list) {
-        if (entry.text.toLowerCase().includes(q)) {
+        const text = entry.text.toLowerCase();
+        if (terms.every((term) => text.includes(term))) {
           hits.push({ which: w, created: entry.created, text: entry.text });
           if (hits.length >= maxResults) return hits;
         }

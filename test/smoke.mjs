@@ -249,7 +249,7 @@ check('correction custom pattern override', isCorrection("don't do that", { corr
 check('correction custom pattern matches', isCorrection('never use x again', { correctionStrongPatterns: ['never use x'] }) === true);
 
 // 14. FTS5 memory mirror (fts.js)
-import { createFtsIndex } from '../dist/lib/fts.js';
+import { createFtsIndex, buildFtsQuery } from '../dist/lib/fts.js';
 const fts = createFtsIndex({ dir: testDir, enabled: true });
 await store.add('memory', 'fts-marker godot physics notes');
 await store.add('failure', buildFailureText('fts-marker tool crash', { category: 'tool-quirk' }), { dedupe: true });
@@ -261,6 +261,23 @@ const ftsMiss = await fts.search(store, 'zzz-no-such-token-zzz', 'all', 10);
 check('fts misses nonsense', ftsMiss !== null && ftsMiss.length === 0);
 const ftsQuote = await fts.search(store, 'say "hi"', 'all', 10);
 check('fts handles quotes safely', ftsQuote !== null);
+check('fts query splits whitespace tokens into quoted phrases', buildFtsQuery('alpha beta') === '"alpha" "beta"');
+check('fts query is null for punctuation-only input', buildFtsQuery(' — ') === null);
+// Multi-keyword recall (GitHub issue #1): whitespace-separated keywords are
+// AND, not one contiguous phrase, so non-adjacent terms hit the same entry.
+await store.add('memory', 'zeta-alpha hobby gardener zeta-omega on macOS');
+const ftsMulti = await fts.search(store, 'zeta-alpha zeta-omega', 'all', 10);
+check('fts multi-keyword matches non-adjacent tokens', ftsMulti !== null && ftsMulti.length === 1, JSON.stringify(ftsMulti?.map(h => h.text)));
+const ftsMultiMiss = await fts.search(store, 'zeta-alpha zzz-absent', 'all', 10);
+check('fts multi-keyword requires every token', ftsMultiMiss !== null && ftsMultiMiss.length === 0);
+const ftsAdjacent = await fts.search(store, 'hobby gardener', 'all', 10);
+check('fts adjacent phrase still matches', ftsAdjacent !== null && ftsAdjacent.length === 1);
+const ftsInjection = await fts.search(store, 'zeta-alpha" OR "zzz-absent', 'all', 10);
+check('fts keeps operators literal (injection safe)', ftsInjection !== null && ftsInjection.length === 0);
+const fallbackMulti = await store.search('zeta-alpha zeta-omega', 'all', 10);
+check('substring fallback uses AND over terms', fallbackMulti.length === 1);
+const fallbackMultiMiss = await store.search('zeta-alpha zzz-absent', 'all', 10);
+check('substring fallback misses when one term is absent', fallbackMultiMiss.length === 0);
 const ftsDisabled = createFtsIndex({ dir: testDir, enabled: false });
 check('fts disabled reports unavailable', (await ftsDisabled.available()) === false);
 check('fts disabled search falls back to null', (await ftsDisabled.search(store, 'fts-marker', 'all', 10)) === null);
