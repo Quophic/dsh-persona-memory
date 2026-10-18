@@ -54,19 +54,9 @@ jobs:
         # OIDC instead.
         run: npm config set registry https://registry.npmjs.org
 
-      - name: Diagnose publish environment
-        run: |
-          node --version
-          npm --version
-          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
-            echo "OIDC token endpoint: present"
-          else
-            echo "OIDC token endpoint: MISSING (id-token permission not granted)"
-          fi
-
       - name: Publish to npm
         if: steps.version.outputs.changed == 'true'
-        run: npm publish --provenance --access public --loglevel=verbose
+        run: npm publish --provenance --access public
 
       - name: Tag release
         if: steps.version.outputs.changed == 'true'
