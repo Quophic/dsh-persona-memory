@@ -112,6 +112,8 @@
 
 ## 安装到 DSH profile
 
+**兼容范围**：dsh `0.1.0-rc.6 ~ 0.2.x`（peer 范围 `^0.1.0-rc.6 || ^0.2.0-rc.1`）。桌面版（Desktop profile）与 npm 版（web profile）都能装；0.2.x 起 dsh 会按 peer 范围做版本闸门，声明不匹配会被判 `incompatible-version` 并拒绝加载。
+
 源码为 **TypeScript**（`index.ts` + `lib/*.ts` + `client/src/*.ts`），发布产物由构建生成：`npm run build`（tsc 编译 Host 半区到 `dist/` + esbuild 打包 Client bundle 到 `client/client.js`）。本地路径安装前需先构建。
 
 插件声明了 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`，安装后 dsh **自动激活**为 profile 层（无需手动挂载）：
@@ -120,9 +122,12 @@
 # 构建（本地路径开发每次改代码后必做）
 npm run build
 
-# 安装（本地路径开发 / npm 发布版均可）
+# 安装（npm / CLI 版，web profile）
 dsh plugin --profile web add file:E:/GitHub/lian_dsh
 # 或：dsh plugin --profile web add dsh-persona-memory
+
+# 安装（桌面版 0.2.x，desktop profile；用安装目录自带的 CLI）
+"D:/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd" plugin --profile desktop add file:E:/GitHub/lian_dsh
 
 # 重启 dsh web
 dsh --profile web

@@ -34,6 +34,7 @@
 - **写入并发安全**：`lib/memory-store.ts` 的 add/update/remove 走**单锁原子 `mutate`**（一次 withLock 内完成读-改-写，`{ next?, value }` 返回协议），杜绝并发工具调用互相覆盖；写前**文件指纹预检**（sha256，对照 Pi 的 ExternalMemoryWriteConflict）——若外部（Pi/手动编辑）在我们读后改写了文件，不覆盖、重试一次、仍冲突则返回 `conflict: true`。只读（read/search/listRaw）和纯写（rewrite/replaceEntries）走各自锁。
 - **与 Pi 字节兼容（对齐 v0.9.4 实测）**：`\n§\n` 分隔、`<!-- created=, last=, project64= -->` 元数据、**无尾随换行**（hermes saveToDisk 不加 `\n`）、`charCount` = `entries.join(delimiter).length`（含分隔符）、USER 上限默认 5000、容量超限**拒绝写入**（overflow: true，tool 层可先合并后重试）、failure 去重按 `(text, project)`、注入包 `<memory-context>` 围栏。扫描器/STANDING/项目路径与 Pi 逐项一致。
 - **安装**：先 `npm run build` 再 `dsh plugin --profile <名> add file:<本仓库路径>`（或 npm 包名）——**bundle 自动激活，无需手动挂载**；覆盖配置在 profile 的 cordis.patch.yml 按 id 覆盖。**file: 安装是真实副本，改代码后必须重新 build + 重装并重启 web 才生效**。
+- **版本兼容（0.2.x 起必须遵守）**：peer 范围 `^0.1.0-rc.6 || ^0.2.0-rc.1`（覆盖 0.1.x / 0.2.x）。0.2.x 的 dsh 在安装与启动时用 `evaluatePluginCompatibility` 校验 `@deepseek-ai/dsh-*` peer（`includePrerelease: true`）——**范围不含运行版本会拒绝安装、并跳过该 bundle 层**；只能用 `dsh plugin allow-version <包@精确版本> --dsh-version <精确版本> --accept-risk` 做逐版本豁免。桌面版（0.2.x）必须用它自带的 CLI 管 desktop profile：`"<安装目录>/resources/runtime/cli/bin/dsh.cmd" plugin --profile desktop add file:<本仓库路径>`——npm 全局的 `dsh` 可能指向另一个旧版本，两者别混用。
 
 ## 迭代与上线 SOP（固定流程，每次照做）
 
