@@ -70,3 +70,4 @@
 - pnpm `add file:` 复用 store 缓存 → 装到旧版本/旧字节（现象：version 没变、`dist/lib/admin.js` 长度不对）→ **先 remove 再 add**，别只 add。
 - 改 client/src 后必须 `npm run build:client` 重新构建 + 重装 + 重启 web 才生效（预构建产物按包分发）；**bundle 无 harness.handle**，Client↔Host 走 webServer 路由 + fetch。
 - 备份目录 `$DSH_HOME/memory-backup/latest/` 是**真实数据**，测试/清理时先确认，删了要立即 `backupAll` 重建。
+- **npm 发布用 Trusted Publishing（OIDC）**：`publish.yml` 需要 `permissions: id-token: write`，npm 包设置里配 Trusted Publisher（Quophic / dsh-persona-memory / publish.yml）；不要再用 `NPM_TOKEN`（旧 token 失效时 `npm publish` 会返回 `E404 PUT ... could not be found or you do not have permission`，看起来像包不存在，其实是认证失败）。
