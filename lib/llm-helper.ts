@@ -13,7 +13,7 @@ export interface LlmRoute {
 
 /** @returns the session's latest request route */
 export function latestRoute(session: Session): LlmRoute | undefined {
-  const events = session.events;
+  const events = sessionEvents(session);
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event?.type === 'request/header') {
@@ -24,6 +24,24 @@ export function latestRoute(session: Session): LlmRoute | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Read the session event log across dsh epochs: 0.1.x exposes the array as
+ * `session.events`, 0.2.x as `session.snapshotEvents()`. Returns an empty log
+ * for any other shape so callers degrade instead of throwing.
+ */
+export function sessionEvents(session: Session): Session['events'] {
+  const carrier = session as unknown as {
+    events?: Session['events'];
+    snapshotEvents?: () => Session['events'];
+  };
+  if (Array.isArray(carrier.events)) return carrier.events;
+  if (typeof carrier.snapshotEvents === 'function') {
+    const snapshot = carrier.snapshotEvents();
+    if (Array.isArray(snapshot)) return snapshot;
+  }
+  return [] as unknown as Session['events'];
 }
 
 /**

@@ -11,7 +11,7 @@
  *    store. All writes still pass the content scanner.
  */
 import { scanContent } from './secret-scanner.js';
-import { callLlm, latestRoute, type LlmRoute } from './llm-helper.js';
+import { callLlm, latestRoute, sessionEvents, type LlmRoute } from './llm-helper.js';
 import { maybeConsolidate, type ConsolidationConfig } from './consolidate.js';
 import { buildFailureText } from './failures.js';
 import { extractCorrectionDirective, isCorrection } from './correction.js';
@@ -138,7 +138,7 @@ export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: Le
  * Last direct user text from the session surface (for the correction entry).
  */
 function lastDirectUserText(session: Session): string {
-  const events = session.events;
+  const events = sessionEvents(session);
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event?.type === 'user/message' && event.data?.source?.kind === 'user') {
