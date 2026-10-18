@@ -15,6 +15,7 @@ import { callLlm, latestRoute, sessionEvents, type LlmRoute } from './llm-helper
 import { maybeConsolidate, type ConsolidationConfig } from './consolidate.js';
 import { buildFailureText } from './failures.js';
 import { extractCorrectionDirective, isCorrection } from './correction.js';
+import { isDerivedSession } from './sessions.js';
 import type { MemoryStore } from './memory-store.js';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
@@ -50,14 +51,36 @@ export interface LearningConfig extends ConsolidationConfig {
   enableSecretScanning: boolean;
   correctionDetection: boolean;
   correctionPatternDetection: boolean;
+  /** Only run correction detection in human-driven sessions. */
+  correctionHumanOnly: boolean;
   correctionRateLimitTurns: number;
   learnEnabled: boolean;
+  /** Only run background learning in human-driven sessions. */
+  learnHumanOnly: boolean;
   learnIntervalTurns: number;
   learnRecentTurns: number;
   learnMaxChars: number;
   learnTimeoutMs: number;
   memoryCharLimit: number;
   autoConsolidate: boolean;
+}
+
+/**
+ * What this session is allowed to feed back into memory. Derived sessions
+ * (subagent / workflow child / AgentTeams member) execute delegated work; their
+ * chatter must not become user facts or corrections, and a main session keeps
+ * the historical behavior.
+ * @returns the two independent switches the session/event hook consults
+ */
+export function sessionCapturePolicy(
+  cfg: Pick<LearningConfig, 'learnEnabled' | 'correctionDetection' | 'learnHumanOnly' | 'correctionHumanOnly'>,
+  session: unknown,
+): { learning: boolean; corrections: boolean } {
+  const derived = isDerivedSession(session);
+  return {
+    learning: cfg.learnEnabled && !(cfg.learnHumanOnly && derived),
+    corrections: cfg.correctionDetection && !(cfg.correctionHumanOnly && derived),
+  };
 }
 
 export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: LearningConfig): void {
@@ -70,8 +93,10 @@ export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: Le
 
   ctx.on('session/event', (session, event) => {
     try {
+      const allowed = sessionCapturePolicy(cfg, session);
+      if (!allowed.learning && !allowed.corrections) return;
       // /feedback command event — immediate correction save.
-      if (event.type === 'feedback/record' && cfg.correctionDetection) {
+      if (event.type === 'feedback/record' && allowed.corrections) {
         const text = event.data?.text;
         if (typeof text === 'string' && text.trim()) {
           saveCorrection(store, cfg, text).catch((err) =>
@@ -82,7 +107,7 @@ export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: Le
       }
       // In-chat correction detection — only on DIRECT human prompts
       // (source.kind === 'user'; synthetic contexts are 'plugin').
-      if (event.type === 'user/message' && cfg.correctionDetection && cfg.correctionPatternDetection) {
+      if (event.type === 'user/message' && allowed.corrections && cfg.correctionPatternDetection) {
         const msg = event.data;
         if (msg?.source?.kind === 'user') {
           const text = msg.content
@@ -98,7 +123,7 @@ export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: Le
       }
       if (event.type === 'turn/end') {
         // In-chat correction captured at turn end (rate-limited).
-        if (pendingCorrections.has(session.id) && cfg.correctionDetection && cfg.correctionPatternDetection) {
+        if (pendingCorrections.has(session.id) && allowed.corrections && cfg.correctionPatternDetection) {
           pendingCorrections.delete(session.id);
           const since = turnsSinceCorrection.get(session.id) ?? cfg.correctionRateLimitTurns;
           if (since >= cfg.correctionRateLimitTurns) {
@@ -115,7 +140,7 @@ export function registerLifecycleHooks(ctx: Context, store: MemoryStore, cfg: Le
         } else {
           turnsSinceCorrection.set(session.id, (turnsSinceCorrection.get(session.id) ?? 0) + 1);
         }
-        if (cfg.learnEnabled) {
+        if (allowed.learning) {
           const n = (turnCounts.get(session.id) ?? 0) + 1;
           if (n >= cfg.learnIntervalTurns) {
             turnCounts.set(session.id, 0);

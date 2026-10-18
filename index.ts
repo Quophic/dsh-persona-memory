@@ -31,6 +31,7 @@ import { renderMemoryBlock } from './lib/prompt.js';
 import { createFtsIndex } from './lib/fts.js';
 import { createVectorIndex } from './lib/vector-index.js';
 import { detectProject, resolveProjectsRoot } from './lib/projects.js';
+import { allowsInjection, sessionOf } from './lib/sessions.js';
 import { registerStandingCommand } from './lib/standing-command.js';
 import { createStandingStore, type StandingStore } from './lib/standing.js';
 import type { Context } from '@deepseek-ai/cordis';
@@ -48,13 +49,19 @@ export interface PluginConfig {
   userCharLimit: number;
   enableSecretScanning: boolean;
   inject: boolean;
+  /** Only inject the memory blocks into human-driven sessions (not subagents). */
+  injectHumanOnly: boolean;
   sectionOrder: number;
   searchMaxResults: number;
   usageNudgeThreshold: number;
   correctionDetection: boolean;
   correctionPatternDetection: boolean;
+  /** Only run correction detection in human-driven sessions. */
+  correctionHumanOnly: boolean;
   correctionRateLimitTurns: number;
   learnEnabled: boolean;
+  /** Only run background learning in human-driven sessions. */
+  learnHumanOnly: boolean;
   learnIntervalTurns: number;
   learnRecentTurns: number;
   learnMaxChars: number;
@@ -101,6 +108,9 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
     userCharLimit: 5000, // aligned with pi-hermes-memory DEFAULT_USER_CHAR_LIMIT
     enableSecretScanning: true,
     inject: true,
+    // Derived sessions (subagent / workflow child / AgentTeams member) do not
+    // see the persona memory block; they inherit context from their parent.
+    injectHumanOnly: true,
     sectionOrder: 55,
     searchMaxResults: 10,
     // usage reporting + consolidation nudge
@@ -108,9 +118,11 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
     // correction detection on feedback/record + in-chat pattern detection
     correctionDetection: true,
     correctionPatternDetection: true,
+    correctionHumanOnly: true,
     correctionRateLimitTurns: 3,
     // background learning every N turns via the session's own LLM route
     learnEnabled: true,
+    learnHumanOnly: true,
     learnIntervalTurns: 10,
     learnRecentTurns: 2,
     learnMaxChars: 6000,
@@ -236,8 +248,10 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
   }
 
   if (cfg.inject) {
+    /** Derived sessions (subagent / workflow child / team member) skip injection. */
+    const hidden = (context: unknown): boolean => !allowsInjection(cfg, sessionOf(context));
     if (cfg.standingEnabled) {
-      ctx.systemPrompt.variable('standing_block', () => standing.readSyncBlock());
+      ctx.systemPrompt.variable('standing_block', (context) => (hidden(context) ? '' : standing.readSyncBlock()));
       ctx.systemPrompt.section({
         name: 'memory:standing',
         order: Math.max(0, cfg.sectionOrder - 5),
@@ -245,7 +259,7 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
       });
     }
     if (cfg.failureInjectionEnabled) {
-      ctx.systemPrompt.variable('failures_block', () => renderRecentFailures(store, cfg));
+      ctx.systemPrompt.variable('failures_block', (context) => (hidden(context) ? '' : renderRecentFailures(store, cfg)));
       ctx.systemPrompt.section({
         name: 'memory:failures',
         order: Math.max(0, cfg.sectionOrder - 3),
@@ -254,6 +268,7 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
     }
     if (cfg.projectEnabled) {
       ctx.systemPrompt.variable('project_block', (context: { agent?: { session?: { header?: { cwd?: string } } } }) => {
+        if (hidden(context)) return '';
         const cwd = context?.agent?.session?.header?.cwd;
         if (!cwd) return '';
         const project = detectProject(cwd, projectsRoot);
@@ -269,17 +284,22 @@ export function apply(ctx: Context, config?: Record<string, unknown>): void {
         text: '{{project_block}}',
       });
     }
-    ctx.systemPrompt.variable('memory_profile', () => renderMemoryBlock(store, cfg));
-    ctx.systemPrompt.section({
-      name: 'memory:profile',
-      order: cfg.sectionOrder,
-      text: [
+    // The whole block (heading + instructions + rendered memory) lives in the
+    // variable so a derived session contributes nothing at all.
+    ctx.systemPrompt.variable('memory_profile', (context) => {
+      if (hidden(context)) return '';
+      return [
         '## Persistent persona memory',
         'You have a persistent long-term memory stored on disk that survives across sessions, shared with your other agent instances. It is managed through the `memory` tool and searched with `memory_search`.',
         'Keep it current: record durable facts about the user, their preferences, project conventions, and environment details; update or delete entries when they change. User corrections and periodic reviews are captured automatically, but you should still save important facts immediately via `memory add`. Never store credentials — writes are scanned and rejected.',
         'Current memory:',
-        '{{memory_profile}}',
-      ].join('\n\n'),
+        renderMemoryBlock(store, cfg),
+      ].join('\n\n');
+    });
+    ctx.systemPrompt.section({
+      name: 'memory:profile',
+      order: cfg.sectionOrder,
+      text: '{{memory_profile}}',
     });
   }
 }

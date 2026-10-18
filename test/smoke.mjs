@@ -460,6 +460,34 @@ registerMemorySearchTool(searchCtx, searchStore, { searchMaxResults: 10 }, () =>
 const ftsOnly = await registeredSearchTool.execute({ query: 'rust' }, undefined);
 check('memory_search tool falls back to fts engine', ftsOnly.engine === 'fts' && ftsOnly.matches[0]?.text.includes('borrow'), JSON.stringify(ftsOnly));
 
+// 23. session provenance: derived sessions are excluded from memory capture
+import { isDerivedSession, allowsInjection, sessionOf } from '../dist/lib/sessions.js';
+import { sessionCapturePolicy } from '../dist/lib/learning.js';
+check('human session is not derived', isDerivedSession({ header: { cwd: 'E:/repo', agentPreset: 'standard' } }) === false);
+check('missing or empty session is not derived', isDerivedSession(undefined) === false && isDerivedSession({}) === false);
+check('subagent origin is derived', isDerivedSession({ header: { origin: 'subagent' } }) === true);
+check('parent-linked session is derived', isDerivedSession({ header: { parentSession: 'session-parent' } }) === true);
+check('delegated session by depth is derived', isDerivedSession({ header: { delegationDepth: 2 } }) === true);
+check('injection allowed for human session', allowsInjection({ injectHumanOnly: true }, { header: {} }) === true);
+check('injection skipped for derived session', allowsInjection({ injectHumanOnly: true }, { header: { origin: 'subagent' } }) === false);
+check('injection stays on when human-only is off', allowsInjection({ injectHumanOnly: false }, { header: { origin: 'subagent' } }) === true);
+check('sessionOf reads the assembly context', sessionOf({ agent: { session: { header: { origin: 'subagent' } } } })?.header?.origin === 'subagent');
+const derivedPolicy = sessionCapturePolicy(
+  { learnEnabled: true, correctionDetection: true, learnHumanOnly: true, correctionHumanOnly: true },
+  { header: { parentSession: 'p' } },
+);
+check('derived session skips learning and corrections', derivedPolicy.learning === false && derivedPolicy.corrections === false);
+const humanPolicy = sessionCapturePolicy(
+  { learnEnabled: true, correctionDetection: true, learnHumanOnly: true, correctionHumanOnly: true },
+  { header: { cwd: 'E:/repo' } },
+);
+check('human session keeps learning and corrections', humanPolicy.learning === true && humanPolicy.corrections === true);
+const permissivePolicy = sessionCapturePolicy(
+  { learnEnabled: true, correctionDetection: true, learnHumanOnly: false, correctionHumanOnly: false },
+  { header: { origin: 'subagent' } },
+);
+check('capture policy can opt derived sessions back in', permissivePolicy.learning === true && permissivePolicy.corrections === true);
+
 // cleanup
 fs.rmSync(testDir, { recursive: true, force: true });
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

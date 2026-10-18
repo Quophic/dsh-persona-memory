@@ -26,7 +26,7 @@
 | `memory_search`（混合检索） | 优先 **FTS5 + 语义向量（RRF 融合）**：FTS5 全文索引（`<dir>/.memory-index.sqlite`，mtime 自动重建）+ 向量索引（`vectorIndexDir` 下 `.memory-vec.sqlite`，只存 embedding、指纹增量同步、纯 JS 余弦）；向量未启用时走 FTS5，SQLite 不可用时回退子串扫描；结果始终 ≤`searchMaxResults` 条、只进工具输出，注入成本不随检索方式增加 |
 | 用量提示 | 所有 `memory` 操作返回用量百分比；达 90%（`usageNudgeThreshold`）提醒用 `rewrite` 合并 |
 | `/standing` 命令 | 用户管理常驻指令（列出 / add / remove / clear） |
-| WebUI 记忆管理页 | 设置页「记忆管理」区块（`settings.section` slot）：常驻指令增删改、三记忆文件条目编辑/删除、项目记忆浏览/编辑、FTS5/向量索引状态与重建、向量搜索配置（开关/模型/下载源/缓存目录）、已下载模型扫描与缓存检测、**插件配置卡**（40 项 schema 驱动全量配置）、**本地备份卡**（立即备份/恢复、自动备份、Pi 丢失自动切换） |
+| WebUI 记忆管理页 | 设置页「记忆管理」区块（`settings.section` slot）：常驻指令增删改、三记忆文件条目编辑/删除、项目记忆浏览/编辑、FTS5/向量索引状态与重建、向量搜索配置（开关/模型/下载源/缓存目录）、已下载模型扫描与缓存检测、**插件配置卡**（43 项 schema 驱动全量配置）、**本地备份卡**（立即备份/恢复、自动备份、Pi 丢失自动切换） |
 
 ### C. 自动学习机制
 
@@ -43,6 +43,7 @@
 |---|---|
 | 内容扫描 | 每次写入过安检：提示注入/数据外泄载荷、API key/token/私钥、不可见 Unicode 字符一律拦截（防凭据落盘、防记忆被植入恶意指令） |
 | 常驻指令 | STANDING.md 每行一条、硬预算（20 条/2000 字符）、始终注入（`memory:standing` 段，早于其他记忆）；**只有 `/standing` 命令或直接编辑能写**——模型无写入口，防止模型把"常驻指令"偷偷注入 |
+| 会话分级 | 子代理/派生会话（subagent、workflow 子会话、AgentTeams 成员）**不注入记忆、不参与后台学习、不产生纠正条目**（`injectHumanOnly` / `learnHumanOnly` / `correctionHumanOnly`，默认全开）；人类主会话行为不变 |
 
 ### E. 工程与容错
 
@@ -152,11 +153,13 @@ file: 安装是真实副本——改代码后须重新构建、`dsh plugin --pro
 | `userCharLimit` | `8000` | USER.md 注入上下文的最大字符数 |
 | `enableSecretScanning` | `true` | 是否启用写入扫描 |
 | `inject` | `true` | 是否注册系统提示词注入段落 |
+| `injectHumanOnly` | `true` | 仅人类驱动的主会话注入记忆；子代理/派生会话不注入（继承父会话上下文） |
 | `sectionOrder` | `55` | 注入段落在系统提示词中的顺序 |
 | `searchMaxResults` | `10` | `memory_search` 单次最多返回条数 |
 | `usageNudgeThreshold` | `0.9` | 达到该用量比例（如 90%）时在结果中提醒合并 |
 | `correctionDetection` | `true` | 收到 `feedback/record` 时自动存 `[correction]` 失败条目 |
 | `correctionPatternDetection` | `true` | 对话内纠正模式检测（强/弱/负向模式，仅直接人工消息） |
+| `correctionHumanOnly` | `true` | 仅人类驱动的主会话做纠正检测；派生会话不产生纠正条目 |
 | `correctionRateLimitTurns` | `3` | 对话内纠正保存的最小间隔（轮） |
 | `memoryFtsEnabled` | `true` | 启用 SQLite FTS5 记忆镜像（`memory_search` 全文检索） |
 | `vectorEnabled` | `false` | 启用语义向量搜索（`memory_search` 变混合检索：FTS5 + 向量 RRF 融合） |
@@ -171,6 +174,7 @@ file: 安装是真实副本——改代码后须重新构建、`dsh plugin --pro
 | `autoBackupMin` | `60` | 自动备份间隔（分钟）；`0` 关闭；只保留最新一份快照到 `$DSH_HOME/memory-backup/latest/` |
 | `autoSwitchOnPiLoss` | `true` | Pi 共享记忆丢失（曾见 MEMORY.md 后消失）时自动切到 `$DSH_HOME/memory` 并从最新备份恢复 |
 | `learnEnabled` | `true` | 是否启用后台自动学习 |
+| `learnHumanOnly` | `true` | 仅人类驱动的主会话做后台学习；子代理/派生会话的对话不写入记忆 |
 | `learnIntervalTurns` | `10` | 每 N 轮（turn/end）触发一次复习 |
 | `learnRecentTurns` | `2` | 每次复习取最近多少个轮次的对话 |
 | `learnMaxChars` | `6000` | 复习用的对话/记忆摘要最大字符数 |
